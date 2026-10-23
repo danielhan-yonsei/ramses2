@@ -1,4 +1,7 @@
 module core_to_star_formation_module
+#ifdef _CUDA
+  use core_star_device, only: gpu_core_to_star
+#endif
   implicit none
 
   ! Input: level. Output: star mass formed.
@@ -31,8 +34,12 @@ recursive subroutine r_core_to_star_formation(pst,input,input_size,output,output
      call mdl_get_reply(pst%s%mdl,rID,output_size,next_output)
      output%mass=output%mass+next_output%mass
   else
+#ifdef _CUDA
+     call gpu_core_to_star(pst%s,ilevel,output%mass)
+#else
      call star_formation_from_core(pst%s,pst%s%r,pst%s%g,pst%s%star, &
           pst%s%core,ilevel,output%mass)
+#endif
      call finish_star_formation(pst%s)
   endif
 end subroutine r_core_to_star_formation
