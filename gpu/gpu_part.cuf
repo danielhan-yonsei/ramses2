@@ -3332,7 +3332,7 @@ attributes(global) subroutine kick_drift_part_kernel(xp_d, vp_d, fp_d, levelp_d,
      f_d, hash_key_d, hash_val_d, hash_size_d, ckey_max_d, key_off_d, &
      box_ckey_min_d, box_ckey_max_d, box_size_d, periodic_d, ngridmax, &
      dtnew_d, dtold_d, skip1, skip2, skip3, dx_loc, fudge_descent, &
-     action_part, ilevel, head_idx, num_parts, leading, has_fp)
+     action_part, ilevel, head_idx, num_parts, leading, has_fp, static)
   integer(kind=8), intent(in), value :: leading
   real(kind=dp),   device :: xp_d(*)
   real(kind=dp),   device :: vp_d(*)
@@ -3352,6 +3352,7 @@ attributes(global) subroutine kick_drift_part_kernel(xp_d, vp_d, fp_d, levelp_d,
   real(kind=8),    device :: dtnew_d(*)
   real(kind=8),    device :: dtold_d(*)
   logical,         intent(in), value :: has_fp
+  logical,         intent(in), value :: static
   real(kind=8),    intent(in), value :: skip1, skip2, skip3
   real(kind=8),    intent(in), value :: dx_loc, fudge_descent
   integer(kind=4), intent(in), value :: action_part
@@ -3371,6 +3372,12 @@ attributes(global) subroutine kick_drift_part_kernel(xp_d, vp_d, fp_d, levelp_d,
   idx = thread_idx + block_idx * blockDim%x
   if (idx >= num_parts) return
   ipart = head_idx + idx
+
+  ! Static particles are not kicked or drifted, only set to this level
+  if (static) then
+     levelp_d(ipart) = ilevel
+     return
+  endif
 
   ff = 0.0_dp
 
@@ -3507,7 +3514,7 @@ subroutine gpu_kick_drift_part(sim, ilevel, action_part)
           & box_ckey_min, box_ckey_max, box_size, periodic, sim%r%ngridmax, &
           & dtnew_part_d, dtold_part_d, &
           & skip1, skip2, skip3, dx_loc, 0d0, action_part, ilevel, head_idx, num_parts, &
-          & int(sim%r%npartmax,8), .false.)
+          & int(sim%r%npartmax,8), .false., sim%p%static)
      call nvtxEndRange()
 
   endif
@@ -3549,7 +3556,7 @@ subroutine gpu_kick_drift_star(sim, ilevel, action_part)
           & box_ckey_min, box_ckey_max, box_size, periodic, sim%r%ngridmax, &
           & dtnew_part_d, dtold_part_d, &
           & skip1, skip2, skip3, dx_loc, 0d0, action_part, ilevel, head_idx, num_parts, &
-          & int(sim%r%nstarmax,8), .false.)
+          & int(sim%r%nstarmax,8), .false., sim%star%static)
      call nvtxEndRange()
 
   endif
@@ -3596,7 +3603,7 @@ subroutine gpu_kick_drift_sink(sim, ilevel, action_part)
           & dtnew_part_d, dtold_part_d, &
           & skip1, skip2, skip3, dx_loc, fudge_descent, &
           & action_part, ilevel, head_idx, num_parts, &
-          & int(sim%r%nsinkmax,8), .true.)
+          & int(sim%r%nsinkmax,8), .true., sim%sink%static)
      call nvtxEndRange()
 
   endif
@@ -3638,7 +3645,7 @@ subroutine gpu_kick_drift_tree(sim, ilevel, action_part)
           & box_ckey_min, box_ckey_max, box_size, periodic, sim%r%ngridmax, &
           & dtnew_part_d, dtold_part_d, &
           & skip1, skip2, skip3, dx_loc, 0d0, action_part, ilevel, head_idx, num_parts, &
-          & int(sim%r%ntreemax,8), .false.)
+          & int(sim%r%ntreemax,8), .false., sim%tree%static)
      call nvtxEndRange()
 
   endif
