@@ -1409,6 +1409,11 @@ subroutine m_read_params(pst)
      nml_ok=.false.
   endif
 #endif
+  ! The GPU flags cells on the density, pressure and magnetic gradients only
+  if(err_grad_u>=0.0d0.or.(neq_chem.and.(err_grad_xHI>=0.0d0.or.err_grad_xHII>=0.0d0)))then
+     write(*,*)'Error: err_grad_u, err_grad_xHI and err_grad_xHII are not supported on GPU'
+     nml_ok=.false.
+  endif
 #endif
 
   ! eta_ohm is a synonym of etamag
