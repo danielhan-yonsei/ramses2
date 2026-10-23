@@ -2335,6 +2335,9 @@ contains
     integer(kind=8), device :: nflag_d
     integer(kind=8) :: nflag_h
     integer :: nsink
+#ifdef CORE
+    integer :: ncore
+#endif
 
     dx = sim%r%boxlen/2**ilevel
     factG = 1
@@ -2411,6 +2414,21 @@ contains
           call nvtxEndRange()
        endif
     endif
+
+#ifdef CORE
+    ! Refinement rules around core particles (cores at level ilevel and finer)
+    if (sim%r%core .and. sim%r%core_refine) then
+       ncore = sim%core%npart - sim%core%headp(ilevel) + 1
+       if (ncore > 0) then
+          call nvtxStartRange("GPU user_flag", color=2)!yellow
+          call sink_flag_kernel<<<ncore, 128>>>(flag1, core_xp, core_mp, int(sim%r%ncoremax, 8), sim%core%headp(ilevel), &
+               & hash_key, hash_val, sim%m%hash_size, ckey_max, key_off, sim%m%ngridmax, &
+               & box_ckey_min, box_ckey_max, periodic, ilevel, sim%r%core_b_spline_order, &
+               & real(sim%m%skip(1),kind=dp), real(sim%m%skip(2),kind=dp), real(sim%m%skip(3),kind=dp), dx)
+          call nvtxEndRange()
+       endif
+    endif
+#endif
 
     nflag_d = 0
 
