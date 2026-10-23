@@ -356,6 +356,75 @@ contains
   ! ==========================================================================
 
   ! ==========================================================================
+  !> Unsplit 3D slopes (half*dq) for slope_type=3, as uslope on the CPU.
+  ! Written by Daniel Han (mini-ramses version October 2026).
+  attributes(device) subroutine slope_unsplit3d(f, i, j, k, sx, sy, sz)
+    real(kind=dp), intent(in) :: f(0:2*nsubgrid+3, 0:2*nsubgrid+3, 0:2*nsubgrid+3)
+    integer, value :: i, j, k
+    real(kind=dp), intent(out) :: sx, sy, sz
+    real(kind=dp) :: fc, vmin, vmax, dfx, dfy, dfz, dff, slop
+    real(kind=dp) :: dflll,dflml,dflrl,dfmll,dfmml,dfmrl,dfrll,dfrml,dfrrl
+    real(kind=dp) :: dfllm,dflmm,dflrm,dfmlm,dfmmm,dfmrm,dfrlm,dfrmm,dfrrm
+    real(kind=dp) :: dfllr,dflmr,dflrr,dfmlr,dfmmr,dfmrr,dfrlr,dfrmr,dfrrr
+    real(kind=dp), parameter :: half = 0.5_dp, zero = 0.0_dp, one = 1.0_dp
+
+    fc = f(i,j,k)
+
+    dflll = f(i-1,j-1,k-1)-fc
+    dflml = f(i-1,j  ,k-1)-fc
+    dflrl = f(i-1,j+1,k-1)-fc
+    dfmll = f(i  ,j-1,k-1)-fc
+    dfmml = f(i  ,j  ,k-1)-fc
+    dfmrl = f(i  ,j+1,k-1)-fc
+    dfrll = f(i+1,j-1,k-1)-fc
+    dfrml = f(i+1,j  ,k-1)-fc
+    dfrrl = f(i+1,j+1,k-1)-fc
+
+    dfllm = f(i-1,j-1,k  )-fc
+    dflmm = f(i-1,j  ,k  )-fc
+    dflrm = f(i-1,j+1,k  )-fc
+    dfmlm = f(i  ,j-1,k  )-fc
+    dfmmm = f(i  ,j  ,k  )-fc
+    dfmrm = f(i  ,j+1,k  )-fc
+    dfrlm = f(i+1,j-1,k  )-fc
+    dfrmm = f(i+1,j  ,k  )-fc
+    dfrrm = f(i+1,j+1,k  )-fc
+
+    dfllr = f(i-1,j-1,k+1)-fc
+    dflmr = f(i-1,j  ,k+1)-fc
+    dflrr = f(i-1,j+1,k+1)-fc
+    dfmlr = f(i  ,j-1,k+1)-fc
+    dfmmr = f(i  ,j  ,k+1)-fc
+    dfmrr = f(i  ,j+1,k+1)-fc
+    dfrlr = f(i+1,j-1,k+1)-fc
+    dfrmr = f(i+1,j  ,k+1)-fc
+    dfrrr = f(i+1,j+1,k+1)-fc
+
+    vmin = min(dflll,dflml,dflrl,dfmll,dfmml,dfmrl,dfrll,dfrml,dfrrl, &
+         &     dfllm,dflmm,dflrm,dfmlm,dfmmm,dfmrm,dfrlm,dfrmm,dfrrm, &
+         &     dfllr,dflmr,dflrr,dfmlr,dfmmr,dfmrr,dfrlr,dfrmr,dfrrr)
+    vmax = max(dflll,dflml,dflrl,dfmll,dfmml,dfmrl,dfrll,dfrml,dfrrl, &
+         &     dfllm,dflmm,dflrm,dfmlm,dfmmm,dfmrm,dfrlm,dfrmm,dfrrm, &
+         &     dfllr,dflmr,dflrr,dfmlr,dfmmr,dfmrr,dfrlr,dfrmr,dfrrr)
+
+    dfx  = half*(f(i+1,j,k)-f(i-1,j,k))
+    dfy  = half*(f(i,j+1,k)-f(i,j-1,k))
+    dfz  = half*(f(i,j,k+1)-f(i,j,k-1))
+    dff  = half*(abs(dfx)+abs(dfy)+abs(dfz))
+
+    if(dff>zero)then
+       slop = min(one,min(abs(vmin),abs(vmax))/dff)
+    else
+       slop = one
+    endif
+
+    sx = half*(slop*dfx)
+    sy = half*(slop*dfy)
+    sz = half*(slop*dfz)
+  end subroutine slope_unsplit3d
+  ! ==========================================================================
+
+  ! ==========================================================================
   !> Limited TVD slopes (half*dq) for hydro and transverse B.
   attributes(device) subroutine compute_tvd_slopes(local_subgrid, i, j, k, slope, &
 #if NVAR>5+NENER
@@ -408,47 +477,56 @@ contains
     Byc_zp = 0.5_dp*(bf%by(i,j,k+1) + bf%by(i,j+1,k+1))
 #endif
 
-    slopes_x%density    = 0.5_dp * slope_moncen(local_subgrid%density   (i - 1, j, k), cell%density,    local_subgrid%density   (i + 1, j, k), slope)
-    slopes_x%velocity_x = 0.5_dp * slope_moncen(local_subgrid%velocity_x(i - 1, j, k), cell%velocity_x, local_subgrid%velocity_x(i + 1, j, k), slope)
-    slopes_x%velocity_y = 0.5_dp * slope_moncen(local_subgrid%velocity_y(i - 1, j, k), cell%velocity_y, local_subgrid%velocity_y(i + 1, j, k), slope)
-    slopes_x%velocity_z = 0.5_dp * slope_moncen(local_subgrid%velocity_z(i - 1, j, k), cell%velocity_z, local_subgrid%velocity_z(i + 1, j, k), slope)
-    slopes_x%pressure   = 0.5_dp * slope_moncen(local_subgrid%pressure  (i - 1, j, k), cell%pressure,   local_subgrid%pressure  (i + 1, j, k), slope)
+    if (slope == 3) then
+       ! Unsplit limiter on the 3x3x3 stencil
+       call slope_unsplit3d(local_subgrid%density,    i, j, k, slopes_x%density,    slopes_y%density,    slopes_z%density)
+       call slope_unsplit3d(local_subgrid%velocity_x, i, j, k, slopes_x%velocity_x, slopes_y%velocity_x, slopes_z%velocity_x)
+       call slope_unsplit3d(local_subgrid%velocity_y, i, j, k, slopes_x%velocity_y, slopes_y%velocity_y, slopes_z%velocity_y)
+       call slope_unsplit3d(local_subgrid%velocity_z, i, j, k, slopes_x%velocity_z, slopes_y%velocity_z, slopes_z%velocity_z)
+       call slope_unsplit3d(local_subgrid%pressure,   i, j, k, slopes_x%pressure,   slopes_y%pressure,   slopes_z%pressure)
+    else
+       slopes_x%density    = 0.5_dp * slope_moncen(local_subgrid%density   (i - 1, j, k), cell%density,    local_subgrid%density   (i + 1, j, k), slope)
+       slopes_x%velocity_x = 0.5_dp * slope_moncen(local_subgrid%velocity_x(i - 1, j, k), cell%velocity_x, local_subgrid%velocity_x(i + 1, j, k), slope)
+       slopes_x%velocity_y = 0.5_dp * slope_moncen(local_subgrid%velocity_y(i - 1, j, k), cell%velocity_y, local_subgrid%velocity_y(i + 1, j, k), slope)
+       slopes_x%velocity_z = 0.5_dp * slope_moncen(local_subgrid%velocity_z(i - 1, j, k), cell%velocity_z, local_subgrid%velocity_z(i + 1, j, k), slope)
+       slopes_x%pressure   = 0.5_dp * slope_moncen(local_subgrid%pressure  (i - 1, j, k), cell%pressure,   local_subgrid%pressure  (i + 1, j, k), slope)
+
+       slopes_y%density    = 0.5_dp * slope_moncen(local_subgrid%density   (i, j - 1, k), cell%density,    local_subgrid%density(   i, j + 1, k), slope)
+       slopes_y%velocity_x = 0.5_dp * slope_moncen(local_subgrid%velocity_x(i, j - 1, k), cell%velocity_x, local_subgrid%velocity_x(i, j + 1, k), slope)
+       slopes_y%velocity_y = 0.5_dp * slope_moncen(local_subgrid%velocity_y(i, j - 1, k), cell%velocity_y, local_subgrid%velocity_y(i, j + 1, k), slope)
+       slopes_y%velocity_z = 0.5_dp * slope_moncen(local_subgrid%velocity_z(i, j - 1, k), cell%velocity_z, local_subgrid%velocity_z(i, j + 1, k), slope)
+       slopes_y%pressure   = 0.5_dp * slope_moncen(local_subgrid%pressure  (i, j - 1, k), cell%pressure,   local_subgrid%pressure(  i, j + 1, k), slope)
+
+       slopes_z%density    = 0.5_dp * slope_moncen(local_subgrid%density   (i, j, k - 1), cell%density,    local_subgrid%density   (i, j, k + 1), slope)
+       slopes_z%velocity_x = 0.5_dp * slope_moncen(local_subgrid%velocity_x(i, j, k - 1), cell%velocity_x, local_subgrid%velocity_x(i, j, k + 1), slope)
+       slopes_z%velocity_y = 0.5_dp * slope_moncen(local_subgrid%velocity_y(i, j, k - 1), cell%velocity_y, local_subgrid%velocity_y(i, j, k + 1), slope)
+       slopes_z%velocity_z = 0.5_dp * slope_moncen(local_subgrid%velocity_z(i, j, k - 1), cell%velocity_z, local_subgrid%velocity_z(i, j, k + 1), slope)
+       slopes_z%pressure   = 0.5_dp * slope_moncen(local_subgrid%pressure  (i, j, k - 1), cell%pressure,   local_subgrid%pressure  (i, j, k + 1), slope)
+    end if
 #ifdef MHD
     ! Transverse B slopes; normal-B slopes unused (face-predicted).
+    ! slope_type=3 is refused under MHD (read_params).
     slopes_x%Bx         = 0.0_dp
     slopes_x%By         = 0.5_dp * slope_moncen(Byc_xm, Byc, Byc_xp, slope)
     slopes_x%Bz         = 0.5_dp * slope_moncen(Bzc_xm, Bzc, Bzc_xp, slope)
-#endif
-
-    slopes_y%density    = 0.5_dp * slope_moncen(local_subgrid%density   (i, j - 1, k), cell%density,    local_subgrid%density(   i, j + 1, k), slope)
-    slopes_y%velocity_x = 0.5_dp * slope_moncen(local_subgrid%velocity_x(i, j - 1, k), cell%velocity_x, local_subgrid%velocity_x(i, j + 1, k), slope)
-    slopes_y%velocity_y = 0.5_dp * slope_moncen(local_subgrid%velocity_y(i, j - 1, k), cell%velocity_y, local_subgrid%velocity_y(i, j + 1, k), slope)
-    slopes_y%velocity_z = 0.5_dp * slope_moncen(local_subgrid%velocity_z(i, j - 1, k), cell%velocity_z, local_subgrid%velocity_z(i, j + 1, k), slope)
-    slopes_y%pressure   = 0.5_dp * slope_moncen(local_subgrid%pressure  (i, j - 1, k), cell%pressure,   local_subgrid%pressure(  i, j + 1, k), slope)
-#ifdef MHD
     slopes_y%Bx         = 0.5_dp * slope_moncen(Bxc_ym, Bxc, Bxc_yp, slope)
     slopes_y%By         = 0.0_dp
     slopes_y%Bz         = 0.5_dp * slope_moncen(Bzc_ym, Bzc, Bzc_yp, slope)
-#endif
-
-    slopes_z%density    = 0.5_dp * slope_moncen(local_subgrid%density   (i, j, k - 1), cell%density,    local_subgrid%density   (i, j, k + 1), slope)
-    slopes_z%velocity_x = 0.5_dp * slope_moncen(local_subgrid%velocity_x(i, j, k - 1), cell%velocity_x, local_subgrid%velocity_x(i, j, k + 1), slope)
-    slopes_z%velocity_y = 0.5_dp * slope_moncen(local_subgrid%velocity_y(i, j, k - 1), cell%velocity_y, local_subgrid%velocity_y(i, j, k + 1), slope)
-    slopes_z%velocity_z = 0.5_dp * slope_moncen(local_subgrid%velocity_z(i, j, k - 1), cell%velocity_z, local_subgrid%velocity_z(i, j, k + 1), slope)
-    slopes_z%pressure   = 0.5_dp * slope_moncen(local_subgrid%pressure  (i, j, k - 1), cell%pressure,   local_subgrid%pressure  (i, j, k + 1), slope)
-#ifdef MHD
     slopes_z%Bx         = 0.5_dp * slope_moncen(Bxc_zm, Bxc, Bxc_zp, slope)
     slopes_z%By         = 0.5_dp * slope_moncen(Byc_zm, Byc, Byc_zp, slope)
     slopes_z%Bz         = 0.0_dp
-
 #endif
 #if NVAR>5+NENER
     ! Passive-scalar slopes (consumed by the scalar advection predictor, C1)
     do n = 1, nscalar
-       rscal = scalar_sub(i,j,k,n)
-       dscal_x(n) = 0.5_dp*slope_moncen(scalar_sub(i-1,j,k,n), rscal, scalar_sub(i+1,j,k,n), slope)
-       dscal_y(n) = 0.5_dp*slope_moncen(scalar_sub(i,j-1,k,n), rscal, scalar_sub(i,j+1,k,n), slope)
-       dscal_z(n) = 0.5_dp*slope_moncen(scalar_sub(i,j,k-1,n), rscal, scalar_sub(i,j,k+1,n), slope)
+       if (slope == 3) then
+          call slope_unsplit3d(scalar_sub(0,0,0,n), i, j, k, dscal_x(n), dscal_y(n), dscal_z(n))
+       else
+          rscal = scalar_sub(i,j,k,n)
+          dscal_x(n) = 0.5_dp*slope_moncen(scalar_sub(i-1,j,k,n), rscal, scalar_sub(i+1,j,k,n), slope)
+          dscal_y(n) = 0.5_dp*slope_moncen(scalar_sub(i,j-1,k,n), rscal, scalar_sub(i,j+1,k,n), slope)
+          dscal_z(n) = 0.5_dp*slope_moncen(scalar_sub(i,j,k-1,n), rscal, scalar_sub(i,j,k+1,n), slope)
+       end if
     end do
 #endif
 

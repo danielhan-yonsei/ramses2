@@ -1398,6 +1398,17 @@ subroutine m_read_params(pst)
      write(*,*)'Error: sink_delta_tout>0 (high frequency sink dump) is not supported on GPU'
      nml_ok=.false.
   endif
+  ! The GPU hydro has slope_type 0 to 3, and 0 to 2 under MHD
+  if(slope_type>3)then
+     write(*,*)'Error: slope_type>3 is not supported on GPU'
+     nml_ok=.false.
+  endif
+#ifdef MHD
+  if(slope_type==3)then
+     write(*,*)'Error: slope_type=3 is not supported on GPU with MHD, use slope_type=2'
+     nml_ok=.false.
+  endif
+#endif
 #endif
 
   ! eta_ohm is a synonym of etamag
