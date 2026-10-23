@@ -244,6 +244,15 @@ def wr_params(params1,params2,gamma,cosmo,nout,**kwargs):
         dble_array.tofile(f)
         int_array = np.array([1,2,3,4,5,6],dtype=np.int64)
         int_array.tofile(f)
+        # cpu boundaries (nhilbert=1, single cpu), as in init_amr.f90
+        ndim = params1["ndim"]
+        lshift, rshift = {1:(2,1), 2:(4,2), 3:(4,1)}[ndim]
+        np.array([1],dtype=np.int32).tofile(f)
+        hkey = 2**(ndim*(params1["levelmin"]-1))
+        for ilevel in range(params1["levelmin"],params1["levelmax"]+1):
+            if ilevel > params1["levelmin"]:
+                hkey = ((hkey << lshift) & (2**64-1)) >> rshift
+            np.array([0,hkey],dtype=np.uint64).tofile(f)
 
 #================================
 # write new ramses hydro header
