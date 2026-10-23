@@ -1,0 +1,3 @@
+!> Core particle accretion CUDA kernels.
+module core_device
+end module core_device
