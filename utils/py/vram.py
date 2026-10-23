@@ -2,21 +2,28 @@
 """Estimate the GPU memory (VRAM) of a single-GPU RAMSES II run.
 
 Usage:
-    vram.py --ngridmax 2^27 --npartmax 2^27 [--ncachemax 1e4] [--nvar 5]
-            [--amr] [--clump [--no-halo] [--tree]] [--npre 4|8]
+    vram.py --ngridmax 2^27 [--npartmax 2^27] [--ncachemax 1e4] [--nvar 5]
+            [--grav] [--mhd] [--amr] [--clump [--no-halo] [--tree]]
+            [--npre 4|8] [--nsubgrid 1]
 
-Counts accept integers, floats (1.4e8) or powers (512^3, 2**27).
+Counts accept integers, floats (1.4e8) or powers (512^3, 2**27; quote the
+latter in zsh, e.g. '2**27').
 Values mirror the &AMR_PARAMS/&RUN_PARAMS namelist entries and the
-NPRE compile flag. Pass --nvar only for HYDRO=1 builds, with
-nvar = 5 + NENER + NPSCAL + NMETAL + NION.
+NPRE, NSUBGRID, GRAV and MHD compile flags. Pass --nvar only for HYDRO=1
+builds, with nvar = 5 + NENER + NPSCAL + NMETAL + NION. Pass --grav for
+GRAV=1 builds with the Poisson solver on. --mhd counts ideal MHD only
+(the split non-ideal MHD solver allocates more). Stars, sinks, turbulence,
+cooling tables and LONGINT particle ids are not counted.
 
 Examples:
-    vram.py --ngridmax 1.4e8 --ncachemax 6e7 --npartmax 1024^3 --amr
-    vram.py --ngridmax 2^27 --npartmax 2^27 --clump --npre 8
+    vram.py --ngridmax 1.4e8 --ncachemax 6e7 --npartmax 1024^3 --grav --amr
+    vram.py --ngridmax 2^27 --npartmax 2^27 --grav --clump --npre 8
+    vram.py --ngridmax 2^21 --nvar 5 --mhd --amr
 """
 import argparse
 
-def vram(ngridmax, npartmax, ncachemax, nvar=None, amr=False, clump=False, halo=True, tree=False, npre=4):
+def vram(ngridmax, npartmax, ncachemax, nvar=None, grav=False, mhd=False, amr=False, clump=False,
+         halo=True, tree=False, npre=4, nsubgrid=1):
     """
     This function estimates the GPU memory (VRAM) usage for RAMSES II simulations
     based on the number of grids, particles, cache, precision, number of hydro variables,
@@ -29,6 +36,8 @@ def vram(ngridmax, npartmax, ncachemax, nvar=None, amr=False, clump=False, halo=
         nvar      : Number of variables (optional, default is None).
                     If provided, it will be used to estimate additional memory usage
                     for storing hydro variables.
+        grav      : Boolean indicating whether gravity is used (GRAV=1, Poisson solver on)
+        mhd       : Boolean indicating whether ideal MHD is used (MHD=1)
         amr       : Boolean indicating whether AMR is used (True) or not (False)
         clump     : Boolean indicating whether the clump finder is used (clump_finder=.true.)
         halo      : Boolean indicating whether the clump finder runs in halo mode
@@ -36,6 +45,7 @@ def vram(ngridmax, npartmax, ncachemax, nvar=None, amr=False, clump=False, halo=
         tree      : Boolean indicating whether merger tree particles are used
                     (merger_tree=.true., only with clump=True, ntreemax = npartmax/100)
         npre      : Precision (4 for single, 8 for double)
+        nsubgrid  : NSUBGRID compile flag (octs per neighbour block edge)
 
     Returns:
         Estimated VRAM usage in GB assuming 1 GPU [GBs]
@@ -56,12 +66,21 @@ def vram(ngridmax, npartmax, ncachemax, nvar=None, amr=False, clump=False, halo=
     Ns = max(Np, Nt)       # particle swap/sort buffers are sized for the largest species
     Nscan = max(N, Np, Nt) # prefix_sum: largest oct or particle scan (no more 8 cells/oct)
 
-    V = ((96 + 56*P)*N + 108*G  # grid 64, hash 24, swap 8, gravity rho/phi/nref/phi_old/f
-        + (92 + 32*P)*M + 4*G + 108*G/7  # multigrid mesh: grid, hash, phi/f, father, nbor
+    Nsort = max(Ns, N) if amr else Ns  # CUB radix sort workspace is shared with the refine oct sort
+
+    V = (96*N          # grid 64, hash 24, swap 8
+        + 4*(nsubgrid + 2)**3*G/nsubgrid**3  # nbor
         + 4*Nscan          # prefix_sum
         + (7*P + 8)*Np     # xp, vp, mp, levelp, sortp
-        + (P + 32)*Ns      # xp_swap, isp_swap, idp_swap, hkeyp + CUB radix sort workspace
+        + (P + 20)*Ns      # xp_swap, isp_swap, idp_swap, hkeyp
+        + 12*Nsort         # CUB radix sort workspace (int64 keys + int32 values)
         )
+
+    if grav:
+        V += 56*P*N  # rho, phi, nref, phi_old, f
+        V += (92 + 32*P)*M + 4*G + 108*G/7  # multigrid mesh: grid, hash, phi/f, father, nbor
+    if mhd:
+        V += 96*P*N  # bold + bnew (8 cells x 6 faces each, two copies)
 
     if nvar is not None:
         V += 16 * nvar * P * N # uold + unew (8 cells × nvar each, two copies)
@@ -108,6 +127,10 @@ if __name__=="__main__":
                         help="maximum number of cache octs (default: 10000)")
     parser.add_argument("--nvar", type=int, default=None,
                         help="number of hydro variables, HYDRO=1 only (default: none)")
+    parser.add_argument("--grav", action="store_true",
+                        help="gravity on (GRAV=1 build with the Poisson solver)")
+    parser.add_argument("--mhd", action="store_true",
+                        help="ideal MHD on (MHD=1 build)")
     parser.add_argument("--amr", action="store_true",
                         help="AMR run (nlevelmax > levelmin)")
     parser.add_argument("--clump", action="store_true",
@@ -118,18 +141,23 @@ if __name__=="__main__":
                         help="merger tree particles on (merger_tree=.true.), only with --clump")
     parser.add_argument("--npre", type=int, default=4, choices=[4,8],
                         help="float precision in bytes, NPRE (default: 4)")
+    parser.add_argument("--nsubgrid", type=int, default=1,
+                        help="NSUBGRID compile flag (default: 1)")
     args = parser.parse_args()
     if (args.tree or not args.halo) and not args.clump:
         parser.error("--tree and --no-halo require --clump")
 
     v = vram(args.ngridmax, args.npartmax, args.ncachemax, nvar=args.nvar,
-             amr=args.amr, clump=args.clump, halo=args.halo, tree=args.tree,
-             npre=args.npre)
+             grav=args.grav, mhd=args.mhd, amr=args.amr, clump=args.clump,
+             halo=args.halo, tree=args.tree, npre=args.npre, nsubgrid=args.nsubgrid)
     print("ngridmax  = {:d}".format(args.ngridmax))
     print("npartmax  = {:d}".format(args.npartmax))
     print("ncachemax = {:d}".format(args.ncachemax))
     print("nvar      = {}".format(args.nvar if args.nvar is not None else "none"))
     print("npre      = {:d} ({} precision)".format(args.npre, "single" if args.npre==4 else "double"))
+    print("nsubgrid  = {:d}".format(args.nsubgrid))
+    print("grav      = {}".format(args.grav))
+    print("mhd       = {}".format(args.mhd))
     print("amr       = {}".format(args.amr))
     print("clump     = {}".format(args.clump))
     if args.clump:
