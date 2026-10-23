@@ -175,10 +175,6 @@ contains
      nml_ok=.false.
   endif
   ! Core phases that are not on the GPU yet
-  if(core.and.core_retire_if_no_acc)then
-     write(*,*)'Error: core_retire_if_no_acc is not supported on GPU yet'
-     nml_ok=.false.
-  endif
   if(core.and.core_to_star)then
      write(*,*)'Error: core_to_star is not supported on GPU yet'
      nml_ok=.false.
