@@ -355,7 +355,7 @@ MODOBJ +=  multigrid_fine_coarse.o rho_fine.o upload.o init_xion.o \
 ifeq ($(CORE),1)
    MODOBJ += core_params.o core_sf_support.o star_formation_common.o
    ifeq ($(COMPILER),NVHPC)
-      MODOBJ += gpu_core.o gpu_core_star.o
+      MODOBJ += gpu_core.o gpu_core_merger.o gpu_core_star.o
    endif
    MODOBJ += core_to_star_formation.o core_clump_output.o core_formation.o core_evolution.o \
       core_retirement.o core_merger.o core_step.o

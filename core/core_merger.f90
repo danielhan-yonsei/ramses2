@@ -8,6 +8,9 @@ module core_merger_module
   use amr_parameters, only: ndim, twotondim, i8b
   use amr_commons
   use nbors_utils, only: get_parent_cell
+#ifdef _CUDA
+  use core_merger_device, only: gpu_core_merger
+#endif
 
   ! Core ids a cell keeps for the candidate search
   integer,parameter::ncore_marker_slot=4
@@ -204,7 +207,11 @@ contains
        call r_core_merger(pst%pLower,ilevel,input_size)
        call mdl_get_reply(pst%s%mdl,rID,0)
     else
+#ifdef _CUDA
+       call gpu_core_merger(pst%s,ilevel,ncore_marker_slot)
+#else
        call core_merger(pst,ilevel)
+#endif
     endif
 
   end subroutine r_core_merger
