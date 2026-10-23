@@ -48,7 +48,7 @@ def vram(ngridmax, npartmax, ncachemax, nvar=None, grav=False, mhd=False, amr=Fa
         nsubgrid  : NSUBGRID compile flag (octs per neighbour block edge)
 
     Returns:
-        Estimated VRAM usage in GB assuming 1 GPU [GBs]
+        Estimated VRAM usage in GiB (2^30 bytes) assuming 1 GPU [GiB]
 
 
     Written by James Sunseri (Princeton University, October 2026)
@@ -101,7 +101,7 @@ def vram(ngridmax, npartmax, ncachemax, nvar=None, grav=False, mhd=False, amr=Fa
             V += (9*P + 28)*Nt  # tree xp, vp, mp, tp, tm, levelp, sortp, pid, hid, idt, idp, idm
             V += 8*nclumpmax  # ntree, min_tree_id
 
-    return (V / (1024)**3) + 1.5  # Convert bytes to GB + CUDA Context
+    return (V / (1024)**3) + 1.5  # Convert bytes to GiB + CUDA Context
 
 
 def count(s):
@@ -163,4 +163,4 @@ if __name__=="__main__":
     if args.clump:
         print("halo      = {}".format(args.halo))
         print("tree      = {}".format(args.tree))
-    print("Estimated VRAM: {:.2f} GB (incl. 1.5 GB CUDA context)".format(v))
+    print("Estimated VRAM: {:.2f} GiB (incl. 1.5 GiB CUDA context)".format(v))
