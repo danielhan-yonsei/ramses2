@@ -2390,6 +2390,72 @@ subroutine gpu_cic_sink_large(sim, ilevel, rtype)
 
 end subroutine gpu_cic_sink_large
 
+#ifdef CORE
+subroutine gpu_cic_core_large(sim, ilevel, rtype)
+  use nvtx
+  use ramses_commons, only: ramses_t
+  type(ramses_t), intent(inout) :: sim
+  integer, intent(in) :: ilevel
+  integer, intent(in) :: rtype
+
+  integer(kind=4) :: head_idx, tail_idx, num_parts
+  integer :: num_threads, num_blocks, idim
+  integer :: deposit_block_size, deposit_num_blocks
+  real(kind=8) :: dx_loc, vol_loc, skip1, skip2, skip3, mass_sph
+  real(kind=8) :: q_h(1:ndim+1)
+  real(kind=8), device :: q_d(1:ndim+1)
+
+  ! If not ALL return
+  if (rtype /= 0) return
+
+  ! Coarsest level: accumulate global monopole and dipole.
+  if (ilevel == sim%r%levelmin .and. sim%core%npart > 0) then
+
+     num_threads = 256
+     num_blocks  = (sim%core%npart + num_threads - 1) / num_threads
+
+     q_d = 0.0_dp
+     call nvtxStartRange("gpu_cic_core_large:multipole", color=4)
+     call multipole_q_kernel<<<num_blocks, num_threads>>>(core_xp, core_mp, q_d, &
+          & 1, sim%core%npart, int(sim%r%ncoremax,8))
+     call nvtxEndRange()
+     q_h = q_d
+
+     do idim = 1, ndim+1
+        sim%g%multipole%q(idim) = sim%g%multipole%q(idim) + q_h(idim)
+     end do
+
+  endif
+
+  ! Particle index range for the deposit: everything at or below ilevel.
+  head_idx = sim%core%headp(ilevel)
+  tail_idx = sim%core%tailp(sim%r%nlevelmax)
+  num_parts = tail_idx - head_idx + 1
+
+  if (num_parts <= 0) return
+
+  dx_loc = sim%r%boxlen/2**ilevel
+  vol_loc = dx_loc**ndim
+  skip1 = sim%m%skip(1)
+  skip2 = sim%m%skip(2)
+  skip3 = sim%m%skip(3)
+  mass_sph = sim%r%mass_sph
+
+  deposit_block_size = 256
+  deposit_num_blocks = (num_parts + deposit_block_size - 1) / deposit_block_size
+  call nvtxStartRange("gpu_cic_core_large:deposit", color=4)
+  call cic_part_large_kernel<<<deposit_num_blocks, deposit_block_size>>>(&
+       & core_sortp, head_idx, num_parts, &
+       & hash_key, hash_val, sim%m%hash_size, ckey_max, key_off, &
+       & box_ckey_min, box_ckey_max, periodic, &
+       & core_xp, core_mp, rho, nref, &
+       & skip1, skip2, skip3, dx_loc, vol_loc, mass_sph, .true., &
+       & sim%r%m_refine(ilevel), sim%r%mass_cut_refine, ilevel, int(sim%r%ncoremax,8))
+  call nvtxEndRange()
+
+end subroutine gpu_cic_core_large
+#endif
+
 !################################################################
 !  GPU CIC medium-stencil deposit (part_dep_algo = 2)
 !################################################################
@@ -3486,6 +3552,48 @@ subroutine gpu_newdt_sink(sim, ilevel, vmax, ekin)
 
 end subroutine gpu_newdt_sink
 
+#ifdef CORE
+subroutine gpu_newdt_core(sim, ilevel, vmax, ekin)
+  use nvtx
+  use ramses_commons, only: ramses_t
+  type(ramses_t), intent(inout) :: sim
+  integer, intent(in) :: ilevel
+  real(kind=8), intent(inout) :: vmax, ekin
+
+  integer(kind=4) :: head_idx, num_parts
+  integer(kind=8) :: leading
+  integer :: num_threads, num_blocks
+  real(kind=8), device :: vmax_dev
+  real(kind=8), device :: ekin_dev
+  real(kind=8) :: vmax_host, ekin_host
+
+  head_idx  = sim%core%headp(ilevel)
+  num_parts = sim%core%tailp(ilevel) - head_idx + 1
+
+  if (num_parts <= 0) return
+
+  leading = sim%r%ncoremax
+  vmax_dev = 0.0_dp
+  ekin_dev = 0.0_dp
+
+  num_threads = 256
+  num_blocks  = (num_parts + num_threads - 1) / num_threads
+
+  call nvtxStartRange("gpu_newdt_core", color=4) ! purple
+  call gpu_newdt_part_kernel<<<num_blocks, num_threads>>>(core_vp, core_mp, &
+       & vmax_dev, ekin_dev, head_idx, num_parts, leading)
+  call GPU_Error_Check("gpu/gpu_part.cuf", 0)
+  call nvtxEndRange()
+
+  vmax_host = vmax_dev   ! D->H
+  ekin_host = ekin_dev   ! D->H
+
+  vmax = MAX(vmax, vmax_host)
+  ekin = ekin + ekin_host
+
+end subroutine gpu_newdt_core
+#endif
+
 subroutine gpu_newdt_tree(sim, ilevel, vmax, ekin)
   use nvtx
   use ramses_commons, only: ramses_t
@@ -3921,6 +4029,52 @@ subroutine gpu_kick_drift_sink(sim, ilevel, action_part)
   endif
 
 end subroutine gpu_kick_drift_sink
+
+#ifdef CORE
+subroutine gpu_kick_drift_core(sim, ilevel, action_part)
+  use nvtx
+  use ramses_commons, only: ramses_t
+  type(ramses_t), intent(inout) :: sim
+  integer, intent(in) :: ilevel
+  integer, intent(in) :: action_part
+
+  integer(kind=4) :: head_idx, tail_idx, num_parts
+  integer :: num_threads, num_blocks
+  real(kind=8) :: dx_loc, skip1, skip2, skip3
+
+  dx_loc = sim%r%boxlen/2**ilevel
+  skip1 = sim%m%skip(1)
+  skip2 = sim%m%skip(2)
+  skip3 = sim%m%skip(3)
+
+  ! Refresh the time step on device
+  dtnew_part_d = sim%g%dtnew
+  dtold_part_d = sim%g%dtold
+
+  head_idx = sim%core%headp(ilevel)
+  tail_idx = sim%core%tailp(ilevel)
+  num_parts = tail_idx - head_idx + 1
+
+  if (num_parts > 0) then
+
+     num_threads = 128
+     num_blocks  = (num_parts + num_threads - 1) / num_threads
+
+     ! Cores keep their force in fp, with no gradient descent
+     call nvtxStartRange("gpu_kick_drift_core", color=4) ! purple
+     call kick_drift_part_kernel<<<num_blocks, num_threads>>>(core_xp, core_vp, core_fp, core_levelp, &
+          & f, hash_key, hash_val, sim%m%hash_size, ckey_max, key_off, &
+          & box_ckey_min, box_ckey_max, box_size, periodic, sim%r%ngridmax, &
+          & dtnew_part_d, dtold_part_d, &
+          & skip1, skip2, skip3, dx_loc, 0d0, &
+          & action_part, ilevel, head_idx, num_parts, &
+          & int(sim%r%ncoremax,8), .true., sim%core%static)
+     call nvtxEndRange()
+
+  endif
+
+end subroutine gpu_kick_drift_core
+#endif
 
 subroutine gpu_kick_drift_tree(sim, ilevel, action_part)
   use nvtx

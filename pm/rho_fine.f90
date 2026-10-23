@@ -7,7 +7,7 @@ module rho_fine_module
   use part_device, only: gpu_split_sink, gpu_sort_sink, gpu_cic_sink_large, gpu_cic_sink_medium, gpu_cic_sink_small
   use part_device, only: gpu_split_tree, gpu_sort_tree
 #ifdef CORE
-  use part_device, only: gpu_split_core, gpu_sort_core
+  use part_device, only: gpu_split_core, gpu_sort_core, gpu_cic_core_large
 #endif
 #endif
 #ifdef _METAL
@@ -734,6 +734,9 @@ recursive subroutine r_cic_part(pst,input_array,input_size)
               call gpu_cic_sink_large(pst%s, ilevel, rtype)
            endif
         endif
+#ifdef CORE
+        if(pst%s%r%core)call gpu_cic_core_large(pst%s, ilevel, rtype)
+#endif
         return
      endif
 #elif defined(_METAL)
