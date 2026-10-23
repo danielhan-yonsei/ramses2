@@ -1414,6 +1414,31 @@ subroutine m_read_params(pst)
      write(*,*)'Error: err_grad_u, err_grad_xHI and err_grad_xHII are not supported on GPU'
      nml_ok=.false.
   endif
+  ! The GPU deposits the mass and interpolates the force with CIC only
+  if(part.and.part_mass_deposition_scheme/=1)then
+     write(*,*)'Error: part_mass_deposition_scheme/=1 (TSC or PCS) is not supported on GPU'
+     nml_ok=.false.
+  endif
+  if(star.and.star_mass_deposition_scheme/=1)then
+     write(*,*)'Error: star_mass_deposition_scheme/=1 (TSC or PCS) is not supported on GPU'
+     nml_ok=.false.
+  endif
+  if(sink.and.sink_mass_deposition_scheme/=1)then
+     write(*,*)'Error: sink_mass_deposition_scheme/=1 (TSC or PCS) is not supported on GPU'
+     nml_ok=.false.
+  endif
+  if(part.and.part_force_interpolation_scheme/=1)then
+     write(*,*)'Error: part_force_interpolation_scheme/=1 (TSC or PCS) is not supported on GPU'
+     nml_ok=.false.
+  endif
+  if(star.and.star_force_interpolation_scheme/=1)then
+     write(*,*)'Error: star_force_interpolation_scheme/=1 (TSC or PCS) is not supported on GPU'
+     nml_ok=.false.
+  endif
+  if(sink.and.sink_force_interpolation_scheme/=1)then
+     write(*,*)'Error: sink_force_interpolation_scheme/=1 (TSC or PCS) is not supported on GPU'
+     nml_ok=.false.
+  endif
 #endif
 
   ! eta_ohm is a synonym of etamag
