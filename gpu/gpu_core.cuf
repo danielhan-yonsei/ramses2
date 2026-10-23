@@ -1,3 +1,607 @@
-!> Core particle accretion CUDA kernels.
+#ifdef MHD
+#error "Core accretion with MHD is not yet implemented on GPU"
+#endif
+#if NENER>0
+#error "Core accretion with NENER>0 is not yet implemented on GPU"
+#endif
+!> GPU core particle accretion CUDA kernels.
 module core_device
+  use amr_parameters, only: ndim, twotondim, dp
+  use hydro_parameters, only: nvar
+  use gpu_utils
+  use cudafor
+  use feedback_device, only: get_cell_by_key
+  use sink_device, only: sink_bspline_device, bondi_alpha_device
+  use gpu_runner, only: grid, uold, core_xp, core_vp, core_jp, core_mp, core_zp, core_up, &
+       & core_levelp, core_nacc
+  implicit none
+
+  ! Largest number of B-spline samples of a core (core_b_spline_order=4)
+  integer, parameter :: nsample_max = 64
+
+  ! B-spline samples of the cores accreting at one level, from gpu_core_prepare
+  ! to gpu_core_finalize: sample j of the i-th core (row acc_row(i)) is (i-1)*nsample_acc+j
+  integer :: ncore_acc = 0, nsample_acc = 0
+  integer(kind=4), device, allocatable, dimension(:) :: acc_row
+  real(kind=dp),   device, allocatable, dimension(:) :: acc_macc
+  integer(kind=4), device, allocatable, dimension(:) :: acc_igrid, acc_icell
+  real(kind=dp),   device, allocatable, dimension(:) :: acc_dreq, acc_u, acc_z, acc_scale
+  real(kind=dp),   device, allocatable, dimension(:,:) :: acc_xrel, acc_vrel
+  integer(kind=8), device, allocatable, target, dimension(:) :: acc_key, acc_key_sorted
+  integer(kind=4), device, allocatable, target, dimension(:) :: acc_idx, acc_idx_sorted
+
+contains
+
+  !> flag(i)=1 for the cores of level ilevel with mass, else 0
+  attributes(global) subroutine core_acc_flag_kernel(flag, npart, ilevel)
+    implicit none
+    integer(kind=4), device :: flag(*)
+    integer(kind=4), intent(in), value :: npart, ilevel
+
+    integer :: ipart
+
+    ipart = (blockIdx%x - 1) * blockDim%x + threadIdx%x
+    if (ipart > npart) return
+    flag(ipart) = 0
+    if (core_mp(ipart) > 0.0_dp .and. core_levelp(ipart) == ilevel) flag(ipart) = 1
+  end subroutine core_acc_flag_kernel
+
+  !> Rows of the cores of level ilevel with mass, in row order (rank: scanned flags)
+  attributes(global) subroutine core_acc_list_kernel(rank, npart, ilevel)
+    implicit none
+    integer(kind=4), device :: rank(*)
+    integer(kind=4), intent(in), value :: npart, ilevel
+
+    integer :: ipart
+
+    ipart = (blockIdx%x - 1) * blockDim%x + threadIdx%x
+    if (ipart > npart) return
+    if (core_mp(ipart) > 0.0_dp .and. core_levelp(ipart) == ilevel) acc_row(rank(ipart)) = ipart
+  end subroutine core_acc_list_kernel
+
+  !> Flux accretion request of the cores of level ilevel: one block per core,
+  !> one thread per B-spline sample. Mirrors core_flux_accretion_request.
+  ! Written by Daniel Han (mini-ramses version October 2026).
+  attributes(global) subroutine core_acc_request_kernel( &
+       & hash_key_d, hash_val_d, hash_size_d, ckey_max_d, key_off_d, ngridmax, &
+       & box_ckey_min_d, box_ckey_max_d, periodic_d, &
+       & ilevel, order, nsample, skip1, skip2, skip3, dx_loc, vol_loc, dtnew, &
+       & factG, lambda_sonic, pi, gamma, smallr, smallc, boost_in, d_star, d_threshold, &
+       & boost_with_density, use_rho_inf, use_bondi, use_fa_fact)
+    implicit none
+    integer(kind=8), device :: hash_key_d(*)
+    integer(kind=4), device :: hash_val_d(*)
+    integer(kind=4), intent(in), value :: hash_size_d
+    integer(kind=4), device :: ckey_max_d(*)
+    integer(kind=8), device :: key_off_d(*)
+    integer(kind=4), intent(in), value :: ngridmax
+    integer(kind=4), device :: box_ckey_min_d(3,*)
+    integer(kind=4), device :: box_ckey_max_d(3,*)
+    logical, device :: periodic_d(3)
+    integer(kind=4), intent(in), value :: ilevel, order, nsample
+    real(kind=dp), intent(in), value :: skip1, skip2, skip3, dx_loc, vol_loc, dtnew
+    real(kind=dp), intent(in), value :: factG, lambda_sonic, pi, gamma, smallr, smallc
+    real(kind=dp), intent(in), value :: boost_in, d_star, d_threshold
+    logical, intent(in), value :: boost_with_density, use_rho_inf, use_bondi, use_fa_fact
+
+    real(kind=dp), shared :: s_w(nsample_max), s_d(nsample_max), s_eth(nsample_max), s_div(nsample_max)
+    real(kind=dp), shared :: s_vv(3, nsample_max)
+    real(kind=dp), shared :: s_dMdt, s_weight_sum, s_rho_gas
+    integer :: icore, ipart, j, k, idim, igrid, icell, igridn, icelln
+    integer(kind=8) :: isample
+    integer(kind=4) :: ckey(3), ckey_div(3)
+    logical :: found
+    real(kind=dp) :: mp, w, d, d_acc, div_cell, div_right, div_left
+    real(kind=dp) :: xcen(3), xnei(3), vp(3), vv(3), vel_gas(3)
+    real(kind=dp) :: weight_sum, rho_sum, eth_sum, div_sum, rho_gas, ethermal, c2, v2
+    real(kind=dp) :: boost, v_bondi, acc_volume, m_gas, r_acc, r2_core, rho_inf
+    real(kind=dp) :: dMBondi_overdt, dMdt_flux, sonic_radius
+
+    icore = blockIdx%x
+    j = threadIdx%x
+    ipart = acc_row(icore)
+    mp = core_mp(ipart)
+    vp(1) = core_vp(ipart, 1)
+    vp(2) = core_vp(ipart, 2)
+    vp(3) = core_vp(ipart, 3)
+    xcen(1) = (core_xp(ipart, 1) + skip1) / dx_loc
+    xcen(2) = (core_xp(ipart, 2) + skip2) / dx_loc
+    xcen(3) = (core_xp(ipart, 3) + skip3) / dx_loc
+
+    ! Gas of the sample cell of this thread
+    found = .false.
+    igrid = 0
+    icell = 0
+    w = 0.0_dp
+    if (j <= nsample) then
+       call sink_bspline_device(order, xcen, j - 1, box_ckey_min_d, box_ckey_max_d, periodic_d, &
+            & ilevel, ckey, xnei, w)
+       ! No accretion from cells outside the box
+       do idim = 1, 3
+          if (.not. periodic_d(idim)) then
+             if (ckey(idim) <  box_ckey_min_d(idim, ilevel + 1)) w = 0.0_dp
+             if (ckey(idim) >= box_ckey_max_d(idim, ilevel + 1)) w = 0.0_dp
+          endif
+       end do
+       if (w > 0.0_dp) then
+          call get_cell_by_key(hash_key_d, hash_val_d, hash_size_d, ckey_max_d, key_off_d, &
+               & ilevel, ckey, igrid, icell)
+          found = (igrid > 0 .and. igrid <= ngridmax)
+       endif
+       s_w(j) = 0.0_dp
+       if (found) then
+          d     = max(uold(icell, 1, igrid), smallr)
+          vv(1) = uold(icell, 2, igrid) / d
+          vv(2) = uold(icell, 3, igrid) / d
+          vv(3) = uold(icell, 4, igrid) / d
+          s_w(j) = w
+          s_d(j) = d
+          s_vv(1:3, j) = vv(1:3)
+          s_eth(j) = uold(icell, 5, igrid) / d - 0.5_dp * (vv(1)**2 + vv(2)**2 + vv(3)**2)
+
+          ! Divergence of the gas momentum relative to the core
+          div_cell = 0.0_dp
+          do idim = 1, 3
+             ckey_div(1:3) = ckey(1:3)
+             ckey_div(idim) = ckey_div(idim) + 1
+             ! Wrap the shifted key across periodic faces
+             if (periodic_d(idim) .and. ckey_div(idim) >= box_ckey_max_d(idim, ilevel + 1)) then
+                ckey_div(idim) = ckey_div(idim) + box_ckey_min_d(idim, ilevel + 1) - box_ckey_max_d(idim, ilevel + 1)
+             endif
+             call get_cell_by_key(hash_key_d, hash_val_d, hash_size_d, ckey_max_d, key_off_d, &
+                  & ilevel, ckey_div, igridn, icelln)
+             div_right = 0.0_dp
+             if (igridn > 0 .and. igridn <= ngridmax) div_right = (uold(icelln, 1 + idim, igridn) &
+                  & - max(uold(icelln, 1, igridn), smallr) * vp(idim)) / dx_loc
+
+             ckey_div(1:3) = ckey(1:3)
+             ckey_div(idim) = ckey_div(idim) - 1
+             if (periodic_d(idim) .and. ckey_div(idim) < box_ckey_min_d(idim, ilevel + 1)) then
+                ckey_div(idim) = ckey_div(idim) - box_ckey_min_d(idim, ilevel + 1) + box_ckey_max_d(idim, ilevel + 1)
+             endif
+             call get_cell_by_key(hash_key_d, hash_val_d, hash_size_d, ckey_max_d, key_off_d, &
+                  & ilevel, ckey_div, igridn, icelln)
+             div_left = 0.0_dp
+             if (igridn > 0 .and. igridn <= ngridmax) div_left = (uold(icelln, 1 + idim, igridn) &
+                  & - max(uold(icelln, 1, igridn), smallr) * vp(idim)) / dx_loc
+
+             div_cell = div_cell + (div_right - div_left) / 2.0_dp
+          end do
+          s_div(j) = div_cell
+       endif
+    endif
+    call syncthreads()
+
+    ! Weighted gas state and accretion rate, summed in sample order
+    if (j == 1) then
+       weight_sum = 0.0_dp; rho_sum = 0.0_dp; vel_gas = 0.0_dp; eth_sum = 0.0_dp; div_sum = 0.0_dp
+       do k = 1, nsample
+          if (s_w(k) > 0.0_dp) then
+             weight_sum = weight_sum + s_w(k)
+             rho_sum = rho_sum + s_w(k) * s_d(k)
+             vel_gas(1:3) = vel_gas(1:3) + s_w(k) * s_d(k) * s_vv(1:3, k)
+             eth_sum = eth_sum + s_w(k) * s_d(k) * s_eth(k)
+             div_sum = div_sum + s_w(k) * s_div(k)
+          endif
+       end do
+
+       dMdt_flux = 0.0_dp
+       rho_gas = 0.0_dp
+       if (weight_sum > 0.0_dp) then
+          rho_gas = rho_sum / weight_sum
+          vel_gas(1:3) = vel_gas(1:3) / rho_sum
+          ethermal = eth_sum / rho_sum
+          c2 = max(gamma * (gamma - 1.0_dp) * ethermal, smallc**2)
+          v2 = (vel_gas(1) - vp(1))**2 + (vel_gas(2) - vp(2))**2 + (vel_gas(3) - vp(3))**2
+          if (boost_with_density) then
+             boost = max((rho_gas / d_star)**2, 1.0_dp)
+          else
+             boost = max(abs(boost_in), 1.0_dp)
+          endif
+          v_bondi = sqrt(c2 + v2) * boost**(-1.0_dp / 3.0_dp)
+
+          acc_volume = weight_sum * real(nsample, kind=dp) * vol_loc
+          m_gas = rho_gas * acc_volume
+          r_acc = 0.5_dp * real(order, kind=dp) * dx_loc
+          r2_core = (factG * (mp + m_gas) / v_bondi**2)**2
+          if (use_rho_inf) then
+             rho_inf = rho_gas / bondi_alpha_device(r_acc / sqrt(r2_core + tiny(0.0_dp)))
+          else
+             rho_inf = rho_gas
+          endif
+          dMBondi_overdt = 4.0_dp * pi * rho_inf * r2_core * v_bondi * lambda_sonic
+
+          dMdt_flux = -(div_sum / weight_sum) * acc_volume
+          if (use_fa_fact) dMdt_flux = dMdt_flux * (0.1_dp * (log10(rho_gas) - log10(d_threshold)) + 1.0_dp)
+          sonic_radius = 0.5_dp * factG * mp / c2
+          if (use_bondi .and. sonic_radius < r_acc) dMdt_flux = dMBondi_overdt
+          dMdt_flux = max(0.0_dp, dMdt_flux)
+          dMdt_flux = min(dMdt_flux, 0.75_dp * m_gas / dtnew)
+       endif
+       s_dMdt = dMdt_flux
+       s_weight_sum = weight_sum
+       s_rho_gas = rho_gas
+    endif
+    call syncthreads()
+
+    ! Request of each sample cell that is not refined
+    if (j <= nsample) then
+       isample = int(icore - 1, kind=8) * nsample + j
+       d_acc = 0.0_dp
+       if (found .and. s_dMdt > 0.0_dp) then
+          if (.not. grid(igrid)%refined(icell)) then
+             d = max(uold(icell, 1, igrid), smallr)
+             d_acc = s_dMdt * dtnew * (w / s_weight_sum) / vol_loc
+             d_acc = d_acc * d / s_rho_gas
+          endif
+       endif
+       acc_dreq(isample) = d_acc
+       acc_igrid(isample) = igrid
+       acc_icell(isample) = icell
+       acc_xrel(isample, 1:3) = xnei(1:3) - xcen(1:3)
+    endif
+  end subroutine core_acc_request_kernel
+
+  !> Cap each request with the gas of its cell after cooling, and keep the gas
+  !> velocity relative to the core, specific thermal energy and metallicity.
+  ! Written by Daniel Han (mini-ramses version October 2026).
+  attributes(global) subroutine core_acc_cap_kernel(nrec, nsample, key_none, smallr, umin, metal, imetal)
+    implicit none
+    integer(kind=8), intent(in), value :: nrec, key_none
+    integer(kind=4), intent(in), value :: nsample, imetal
+    real(kind=dp), intent(in), value :: smallr, umin
+    logical, intent(in), value :: metal
+
+    integer(kind=8) :: isample
+    integer :: ipart, igrid, icell
+    real(kind=dp) :: rho, cap, d_req, q2, q3, q4
+
+    isample = int(blockIdx%x - 1, kind=8) * blockDim%x + threadIdx%x
+    if (isample > nrec) return
+    acc_idx(isample) = int(isample, kind=4)
+    acc_key(isample) = key_none
+    d_req = acc_dreq(isample)
+    if (d_req <= 0.0_dp) return
+
+    igrid = acc_igrid(isample)
+    icell = acc_icell(isample)
+    ipart = acc_row((isample - 1) / nsample + 1)
+    rho = uold(icell, 1, igrid)
+    q2 = uold(icell, 2, igrid) / rho
+    q3 = uold(icell, 3, igrid) / rho
+    q4 = uold(icell, 4, igrid) / rho
+    acc_vrel(isample, 1) = q2 - core_vp(ipart, 1)
+    acc_vrel(isample, 2) = q3 - core_vp(ipart, 2)
+    acc_vrel(isample, 3) = q4 - core_vp(ipart, 3)
+    acc_u(isample) = max(uold(icell, 5, igrid) / rho - 0.5_dp * (q2**2 + q3**2 + q4**2), umin)
+    if (metal) acc_z(isample) = uold(icell, imetal, igrid) / rho
+
+    cap = 0.75_dp * max(rho - smallr, 0.0_dp)
+    d_req = min(d_req, cap)
+    acc_dreq(isample) = d_req
+    if (d_req > 0.0_dp) acc_key(isample) = int(igrid - 1, kind=8) * twotondim + (icell - 1)
+  end subroutine core_acc_cap_kernel
+
+  !> One thread per cell that cores accrete from (the first of its run of
+  !> sorted requests): scale the requests to 0.75(rho-smallr) and remove the gas.
+  ! Written by Daniel Han (mini-ramses version October 2026).
+  attributes(global) subroutine core_acc_owner_kernel(nrec, key_none, smallr)
+    implicit none
+    integer(kind=8), intent(in), value :: nrec, key_none
+    real(kind=dp), intent(in), value :: smallr
+
+    integer(kind=8) :: k, kk, key
+    integer :: igrid, icell, ivar
+    logical :: same
+    real(kind=dp) :: req, rho, cap, scale, d_acc
+
+    k = int(blockIdx%x - 1, kind=8) * blockDim%x + threadIdx%x
+    if (k > nrec) return
+    key = acc_key_sorted(k)
+    if (key == key_none) return
+    if (k > 1) then
+       if (acc_key_sorted(k - 1) == key) return
+    endif
+
+    ! Requests of this cell, in request order
+    req = 0.0_dp
+    kk = k
+    same = .true.
+    do while (same)
+       req = req + acc_dreq(acc_idx_sorted(kk))
+       kk = kk + 1
+       same = (kk <= nrec)
+       if (same) same = (acc_key_sorted(kk) == key)
+    end do
+
+    igrid = acc_igrid(acc_idx_sorted(k))
+    icell = acc_icell(acc_idx_sorted(k))
+    rho = uold(icell, 1, igrid)
+    cap = 0.75_dp * max(rho - smallr, 0.0_dp)
+    scale = min(1.0_dp, cap / req)
+    d_acc = scale * req
+    do ivar = 1, nvar
+       uold(icell, ivar, igrid) = uold(icell, ivar, igrid) * (1.0_dp - d_acc / rho)
+    end do
+    do while (k < kk)
+       acc_scale(acc_idx_sorted(k)) = scale
+       k = k + 1
+    end do
+  end subroutine core_acc_owner_kernel
+
+  !> One thread per accreting core: sum what it takes from its samples and add
+  !> it to the core. Mirrors the per-core sums and the core update of core_finalize.
+  ! Written by Daniel Han (mini-ramses version October 2026).
+  attributes(global) subroutine core_acc_update_kernel(ncore, nsample, nstep_coarse, dx_loc, vol_loc, &
+       & metal, momentum_conserving, fix_mass, static, periodic_d, bs1, bs2, bs3)
+    implicit none
+    integer(kind=4), intent(in), value :: ncore, nsample, nstep_coarse
+    real(kind=dp), intent(in), value :: dx_loc, vol_loc, bs1, bs2, bs3
+    logical, intent(in), value :: metal, momentum_conserving, fix_mass, static
+    logical, device :: periodic_d(3)
+
+    integer :: icore, ipart, j, idim
+    integer(kind=8) :: isample
+    real(kind=dp) :: d_acc, macc, uacc, zacc, mold, mnew
+    real(kind=dp) :: xacc(3), pacc(3), lacc(3), xr(3), vr(3), bs(3)
+
+    icore = (blockIdx%x - 1) * blockDim%x + threadIdx%x
+    if (icore > ncore) return
+    ipart = acc_row(icore)
+
+    macc = 0.0_dp; uacc = 0.0_dp; zacc = 0.0_dp
+    xacc = 0.0_dp; pacc = 0.0_dp; lacc = 0.0_dp
+    do j = 1, nsample
+       isample = int(icore - 1, kind=8) * nsample + j
+       d_acc = 0.0_dp
+       if (acc_dreq(isample) > 0.0_dp) d_acc = acc_scale(isample) * acc_dreq(isample)
+       if (d_acc > 0.0_dp) then
+          macc = macc + d_acc * vol_loc
+          uacc = uacc + d_acc * vol_loc * acc_u(isample)
+          if (metal) zacc = zacc + d_acc * vol_loc * acc_z(isample)
+          if (momentum_conserving) then
+             xr(1:3) = acc_xrel(isample, 1:3)
+             vr(1:3) = acc_vrel(isample, 1:3)
+             xacc(1:3) = xacc(1:3) + d_acc * xr(1:3) * vol_loc * dx_loc
+             pacc(1:3) = pacc(1:3) + d_acc * vr(1:3) * vol_loc
+             lacc(1) = lacc(1) + d_acc * (xr(2) * vr(3) - xr(3) * vr(2)) * vol_loc * dx_loc
+             lacc(2) = lacc(2) + d_acc * (xr(3) * vr(1) - xr(1) * vr(3)) * vol_loc * dx_loc
+             lacc(3) = lacc(3) + d_acc * (xr(1) * vr(2) - xr(2) * vr(1)) * vol_loc * dx_loc
+          endif
+       endif
+    end do
+    acc_macc(icore) = macc
+    if (macc == 0.0_dp) return
+
+    mold = core_mp(ipart)
+    mnew = mold + macc
+    bs(1) = bs1; bs(2) = bs2; bs(3) = bs3
+    if (.not. static) then
+       do idim = 1, 3
+          core_xp(ipart, idim) = core_xp(ipart, idim) + xacc(idim) / mnew
+          if (periodic_d(idim)) then
+             if (core_xp(ipart, idim) <  0.0_dp ) core_xp(ipart, idim) = core_xp(ipart, idim) + bs(idim)
+             if (core_xp(ipart, idim) >= bs(idim)) core_xp(ipart, idim) = core_xp(ipart, idim) - bs(idim)
+          endif
+       end do
+    endif
+    do idim = 1, 3
+       core_vp(ipart, idim) = core_vp(ipart, idim) + pacc(idim) / mnew
+       core_jp(ipart, idim) = (mold * core_jp(ipart, idim) + lacc(idim)) / mnew
+    end do
+    core_up(ipart) = (mold * core_up(ipart) + uacc) / mnew
+    if (metal) core_zp(ipart) = (mold * core_zp(ipart) + zacc) / mnew
+    ! core_fix_mass keeps the core mass; the gas is still removed
+    if (.not. fix_mass) core_mp(ipart) = mnew
+    ! Coarse step of this accretion
+    core_nacc(ipart) = nstep_coarse
+  end subroutine core_acc_update_kernel
+
+  !> Total mass accreted by the cores, summed in row order
+  attributes(global) subroutine core_acc_mass_kernel(ncore, mass_d)
+    implicit none
+    integer(kind=4), intent(in), value :: ncore
+    real(kind=dp), device :: mass_d
+
+    integer :: icore
+    real(kind=dp) :: mass
+
+    mass = 0.0_dp
+    do icore = 1, ncore
+       mass = mass + acc_macc(icore)
+    end do
+    mass_d = mass
+  end subroutine core_acc_mass_kernel
+
+  !> Grow the sample arrays to ncore cores and nrec samples
+  subroutine core_acc_alloc(ncore, nrec)
+    implicit none
+    integer, intent(in) :: ncore, nrec
+
+    if (allocated(acc_row)) then
+       if (size(acc_row) < ncore) deallocate(acc_row, acc_macc)
+    endif
+    if (.not. allocated(acc_row)) allocate(acc_row(1:ncore), acc_macc(1:ncore))
+
+    if (allocated(acc_dreq)) then
+       if (size(acc_dreq) < nrec) deallocate(acc_igrid, acc_icell, acc_dreq, acc_u, acc_z, acc_scale, &
+            & acc_xrel, acc_vrel, acc_key, acc_key_sorted, acc_idx, acc_idx_sorted)
+    endif
+    if (.not. allocated(acc_dreq)) then
+       allocate(acc_igrid(1:nrec), acc_icell(1:nrec))
+       allocate(acc_dreq(1:nrec), acc_u(1:nrec), acc_z(1:nrec), acc_scale(1:nrec))
+       allocate(acc_xrel(1:nrec, 1:3), acc_vrel(1:nrec, 1:3))
+       allocate(acc_key(1:nrec), acc_key_sorted(1:nrec), acc_idx(1:nrec), acc_idx_sorted(1:nrec))
+    endif
+  end subroutine core_acc_alloc
+
+  ! =========================================================================
+  ! Host Driver: accretion requests of the cores of level ilevel, before the
+  ! hydro step. Mirrors core_prepare in core_evolution.f90.
+  ! Written by Daniel Han (mini-ramses version October 2026).
+  ! =========================================================================
+  subroutine gpu_core_prepare(sim, ilevel)
+    use nvtx
+    use constants, only: pi, twopi
+    use ramses_commons, only: ramses_t
+    use gpu_runner, only: hash_key, hash_val, ckey_max, key_off, box_ckey_min, box_ckey_max, periodic, &
+         & prefix_sum, gpu_scan
+    implicit none
+    type(ramses_t) :: sim
+    integer, intent(in) :: ilevel
+
+    real(kind=8) :: scale_nH, scale_T2, scale_l, scale_d, scale_t, scale_v
+    real(kind=8) :: factG, lambda_sonic, dx_loc, vol_loc, d_star
+    integer(kind=8) :: nrec
+    integer(kind=4), device :: ncore_d
+    integer :: npart, num_blocks, num_threads
+
+    associate(r=>sim%r, g=>sim%g, m=>sim%m, p=>sim%core)
+
+    ncore_acc = 0
+    npart = p%npart
+    if (npart <= 0) return
+
+    ! Cores of this level with mass, in row order
+    call nvtxStartRange("GPU Core Accretion Prepare", color=5)!red
+    num_blocks = (npart + 127) / 128
+    call core_acc_flag_kernel<<<num_blocks, 128>>>(prefix_sum, npart, ilevel)
+    call GPU_Error_Check(__FILE__, __LINE__)
+    call gpu_scan(prefix_sum, 1, npart, ncore_d)
+    ncore_acc = ncore_d
+    if (ncore_acc > 0) then
+
+       nsample_acc = r%core_b_spline_order**ndim
+       nrec = int(ncore_acc, kind=8) * int(nsample_acc, kind=8)
+       if (nrec > int(huge(1), kind=8)) then
+          write(*,*)'Error: gpu_core_prepare: number of core accretion samples exceeds 2^31'
+          error stop
+       endif
+       call core_acc_alloc(ncore_acc, int(nrec))
+       call core_acc_list_kernel<<<num_blocks, 128>>>(prefix_sum, npart, ilevel)
+       call GPU_Error_Check(__FILE__, __LINE__)
+
+       call units(r, g, scale_l, scale_t, scale_d, scale_v, scale_nH, scale_T2)
+
+       ! Gravitational constant
+       factG = 1d0
+       if (r%cosmo) factG = 3d0/4d0/twopi*g%omega_m*g%aexp
+
+       ! Bondi sonic constant
+       if (r%core_use_bondi_lambda) then
+          if (abs(r%gamma - 1d0).le.0.01d0) then
+             lambda_sonic = 0.25d0*exp(1.5d0)
+          else if (abs(r%gamma - 5d0/3d0).le.0.01d0) then
+             lambda_sonic = 0.25d0
+          else
+             lambda_sonic = 0.5d0**((r%gamma + 1d0)/(2d0*(r%gamma - 1d0))) &
+                  & * (0.25d0*(5d0-3d0*r%gamma))**(-(5d0-3d0*r%gamma)/(2d0*(r%gamma - 1d0)))
+          end if
+       else
+          lambda_sonic = 1d0
+       end if
+
+       ! Star formation density threshold for the density-dependent boost
+       d_star = 0d0
+       if (r%n_star > 0d0) d_star = r%n_star/scale_nH
+
+       ! Mesh spacing in that level
+       dx_loc = r%boxlen/2**ilevel
+       vol_loc = dx_loc**ndim
+
+       num_threads = 32 * ((nsample_acc + 31) / 32)
+       call core_acc_request_kernel<<<ncore_acc, num_threads>>>( &
+            & hash_key, hash_val, m%hash_size, ckey_max, key_off, m%ngridmax, &
+            & box_ckey_min, box_ckey_max, periodic, &
+            & ilevel, r%core_b_spline_order, nsample_acc, &
+            & real(m%skip(1),kind=dp), real(m%skip(2),kind=dp), real(m%skip(3),kind=dp), &
+            & real(dx_loc,kind=dp), real(vol_loc,kind=dp), real(g%dtnew(ilevel),kind=dp), &
+            & real(factG,kind=dp), real(lambda_sonic,kind=dp), real(pi,kind=dp), &
+            & real(r%gamma,kind=dp), real(r%smallr,kind=dp), real(r%smallc,kind=dp), &
+            & real(r%core_accretion_boost,kind=dp), real(d_star,kind=dp), &
+            & real(r%core_density_threshold/scale_nH,kind=dp), &
+            & r%core_accretion_boost < 0d0 .and. r%n_star > 0d0, r%core_use_rho_inf, &
+            & r%core_use_bondi_for_subsonic_accretion, &
+            & r%core_use_fa_fact_B14 .and. r%core_density_threshold > 0d0)
+       call GPU_Error_Check(__FILE__, __LINE__)
+
+    endif
+    call nvtxEndRange()
+
+    end associate
+  end subroutine gpu_core_prepare
+
+  ! =========================================================================
+  ! Host Driver: accretion of the cores of level ilevel after cooling, from
+  ! the requests of gpu_core_prepare. Mirrors core_finalize in core_evolution.f90.
+  ! Written by Daniel Han (mini-ramses version October 2026).
+  ! =========================================================================
+  subroutine gpu_core_finalize(sim, ilevel, nstep_coarse, mass)
+    use nvtx
+    use iso_c_binding, only: c_loc
+    use cub_module, only: radix_sort
+    use ramses_commons, only: ramses_t
+    use gpu_runner, only: periodic
+    implicit none
+    type(ramses_t) :: sim
+    integer, intent(in) :: ilevel, nstep_coarse
+    real(kind=8), intent(out) :: mass
+
+    integer(kind=8) :: nrec, key_none
+    integer :: end_bit, num_blocks
+    real(kind=8) :: dx_loc, vol_loc
+    real(kind=dp), device :: mass_d
+    real(kind=dp) :: mass_dp
+
+    mass = 0d0
+    if (ncore_acc == 0) return
+
+    associate(r=>sim%r, m=>sim%m, p=>sim%core)
+
+    call nvtxStartRange("GPU Core Accretion Finalize", color=5)!red
+    nrec = int(ncore_acc, kind=8) * int(nsample_acc, kind=8)
+    num_blocks = int((nrec + 255) / 256)
+
+    ! Mesh spacing in that level
+    dx_loc = r%boxlen/2**ilevel
+    vol_loc = dx_loc**ndim
+
+    ! Owner cell keys (igrid,icell) sort below key_none, the key of no owner
+    key_none = int(m%ngridmax, kind=8) * twotondim
+    end_bit = 1
+    do while (ishft(key_none, -end_bit) /= 0)
+       end_bit = end_bit + 1
+    end do
+
+    ! Cap each request with the gas of its cell
+    call core_acc_cap_kernel<<<num_blocks, 256>>>(nrec, nsample_acc, key_none, &
+         & real(r%smallr,kind=dp), real(r%smallc**2/(r%gamma-1d0),kind=dp), r%metal, r%imetal)
+    call GPU_Error_Check(__FILE__, __LINE__)
+
+    ! Group the requests by owner cell, each cell keeping its requests in order
+    call radix_sort(c_loc(acc_key(1)), c_loc(acc_key_sorted(1)), &
+         & c_loc(acc_idx(1)), c_loc(acc_idx_sorted(1)), 1, int(nrec), 0, end_bit)
+
+    ! Scale the requests of each owner cell to the shared cap and remove the gas
+    call core_acc_owner_kernel<<<num_blocks, 256>>>(nrec, key_none, real(r%smallr,kind=dp))
+    call GPU_Error_Check(__FILE__, __LINE__)
+
+    ! Add the accreted gas to the cores
+    call core_acc_update_kernel<<<(ncore_acc + 127) / 128, 128>>>(ncore_acc, nsample_acc, nstep_coarse, &
+         & real(dx_loc,kind=dp), real(vol_loc,kind=dp), r%metal, r%core_momentum_conserving, &
+         & r%core_fix_mass, p%static, periodic, &
+         & real(r%box_size(1),kind=dp), real(r%box_size(2),kind=dp), real(r%box_size(3),kind=dp))
+    call GPU_Error_Check(__FILE__, __LINE__)
+
+    call core_acc_mass_kernel<<<1, 1>>>(ncore_acc, mass_d)
+    call GPU_Error_Check(__FILE__, __LINE__)
+    call nvtxEndRange()
+
+    mass_dp = mass_d
+    mass = real(mass_dp, kind=8)
+    ncore_acc = 0
+
+    end associate
+  end subroutine gpu_core_finalize
+
 end module core_device
