@@ -622,7 +622,7 @@ end subroutine nimhd_ghost_b_kernel
 #endif
 
   ! =========================================================================
-  attributes(device) subroutine make_new_oct(grid, flag1, uold, bold, f, phi, phi_old, ifree, oct_idx, cell_idx, &
+  attributes(device) subroutine make_new_oct(grid, flag1, uold, bold, f, phi, phi_old, ifree, ngridmax, oct_idx, cell_idx, &
        & hash_key, hash_val, hash_size, ckey_max, key_off, box_ckey_min, box_ckey_max, periodic, &
        & interpol_var, interpol_type, smallr)
     use amr_parameters, only: ndim
@@ -634,6 +634,7 @@ end subroutine nimhd_ghost_b_kernel
     real(kind=dp), device :: bold(1:twotondim,1:6,*)
     integer(kind=4), device :: flag1(1:twotondim,*)
     integer, device :: ifree
+    integer(kind=4), value :: ngridmax
     integer, value :: oct_idx, cell_idx
     integer(kind=8), device :: hash_key(*)
     integer(kind=4), device :: hash_val(*)
@@ -672,6 +673,9 @@ end subroutine nimhd_ghost_b_kernel
 
     ! Get index from free memory
     child_idx = atomicadd(ifree, 1)
+
+    ! Skip instead of writing out of bounds if the grid memory is full
+    if (child_idx > ngridmax) return
 
     ! Set new oct properties
     grid(child_idx)%lev = ilevel
@@ -729,7 +733,7 @@ end subroutine nimhd_ghost_b_kernel
   ! =========================================================================
 
   ! =========================================================================
-  attributes(global) subroutine refine_kernel(grid, flag1, uold, bold, f, phi, phi_old, ifree, head_idx, num_octs, &
+  attributes(global) subroutine refine_kernel(grid, flag1, uold, bold, f, phi, phi_old, ifree, ngridmax, head_idx, num_octs, &
        & hash_key, hash_val, hash_size, ckey_max, key_off, box_ckey_min, box_ckey_max, periodic, &
        & interpol_var, interpol_type, smallr)
     type(oct), device :: grid(*)
@@ -740,6 +744,7 @@ end subroutine nimhd_ghost_b_kernel
     real(kind=dp), device :: uold(1:twotondim,1:nvar,*)
     real(kind=dp), device :: bold(1:twotondim,1:6,*)
     integer, device :: ifree
+    integer(kind=4), intent(in), value :: ngridmax
     integer(kind=4), intent(in), value :: head_idx
     integer(kind=4), intent(in), value :: num_octs
     ! Parent stencil for MHD prolongation.
@@ -773,7 +778,7 @@ end subroutine nimhd_ghost_b_kernel
 
     ! Create new oct
     if (flagged .and. .not. refined) then
-       call make_new_oct(grid, flag1, uold, bold, f, phi, phi_old, ifree, oct_idx, cell_idx, &
+       call make_new_oct(grid, flag1, uold, bold, f, phi, phi_old, ifree, ngridmax, oct_idx, cell_idx, &
             & hash_key, hash_val, hash_size, ckey_max, key_off, box_ckey_min, box_ckey_max, periodic, &
             & interpol_var, interpol_type, smallr)
        grid(oct_idx)%refined(cell_idx) = .true.

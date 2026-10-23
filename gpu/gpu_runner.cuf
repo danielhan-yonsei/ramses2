@@ -1665,7 +1665,7 @@ contains
     if (num_octs > 0) then
        call refine_kernel<<<num_blocks, dim3(threadsX_per_block,threadsY_per_block,1)>>>(grid, flag1, &
             & uold, bold, f, phi, phi_old, &
-            & ifree_d, head_idx, num_octs, &
+            & ifree_d, sim%m%ngridmax, head_idx, num_octs, &
             & hash_key, hash_val, sim%m%hash_size, ckey_max, key_off, box_ckey_min, box_ckey_max, periodic, &
             & interpol_var, interpol_type, smallr_d)
     endif
