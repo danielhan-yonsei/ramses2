@@ -587,6 +587,78 @@ contains
   end subroutine gpu_grav_hydro
 
   !> @brief
+  !> Add the hydro source terms to unew on a GPU
+  !>
+  !> @detail
+  !> pdV terms for the non-thermal and turbulent energies, and the dual energy fix
+  !>
+  !> @param[in] sim : The simulation object
+  !> @param[in] ilevel : The refinement level to update
+  !>
+  ! Written by Daniel Han (mini-ramses version October 2026).
+  subroutine gpu_source_hydro(sim, ilevel)
+    use nvtx
+    use hydro_parameters, only: nener
+    use hydro_device, only: source_hydro_kernel
+#if NENER>0
+    use hydro_device, only: gamma_rad_d
+#endif
+    use ramses_commons, only: ramses_t
+    type(ramses_t), intent(inout)::sim
+    integer, intent(in)::ilevel
+
+    integer(kind=4) :: head_idx, num_octs
+    integer :: threadsX_per_block, threadsY_per_block, num_blocks
+    real(kind=dp) :: dx, dt, T2_fix
+    real(kind=8) :: scale_nH, scale_T2, scale_l, scale_d, scale_t, scale_v
+    logical :: ok
+
+    ! Check if hydro source terms are required
+    ok = sim%r%entropy .and. sim%r%dual_energy .GE. 0
+    ok = ok .or. nener>0
+    ok = ok .or. sim%r%sgs_turb
+    if (.not. ok) return
+
+    if(sim%r%verbose.and.sim%g%myid==1)write(*,'("   Entering gpu_source_hydro for level ",I2)')ilevel
+
+    ! Conversion factor from user units to cgs units
+    call units(sim%r,sim%g,scale_l,scale_t,scale_d,scale_v,scale_nH,scale_T2)
+
+    ! Maximum temperature for dual energy switch
+    if (sim%r%T2_fix > 0) then
+       T2_fix = real(sim%r%T2_fix/scale_T2, kind=dp)
+    else
+       T2_fix = huge(1.0_dp)
+    endif
+
+    dx = real(sim%r%boxlen/2**ilevel, kind=dp)
+    dt = real(sim%g%dtnew(ilevel), kind=dp)
+#if NENER>0
+    gamma_rad_d = real(sim%r%gamma_rad, kind=dp)
+#endif
+
+    head_idx = sim%m%head(ilevel)
+    num_octs = sim%m%noct(ilevel)
+    if (num_octs <= 0) return
+    threadsX_per_block = 8
+    threadsY_per_block = 16
+    num_blocks = (num_octs + threadsY_per_block - 1) / threadsY_per_block
+
+    call nvtxStartRange("GPU source_hydro", color=0)!green
+    call source_hydro_kernel<<<num_blocks, dim3(threadsX_per_block,threadsY_per_block,1)>>>(grid, uold, unew, bnew, &
+         & hash_key, hash_val, sim%m%hash_size, ckey_max, key_off, &
+         & periodic, box_ckey_min, box_ckey_max, sim%m%ngridmax, head_idx, num_octs, ilevel, &
+         & dx, dt, real(sim%g%hexp, kind=dp), real(sim%r%gamma, kind=dp), &
+         & real(sim%r%smallr, kind=dp), real(sim%r%smallc, kind=dp), &
+         & sim%r%entropy, real(sim%r%dual_energy, kind=dp), T2_fix, sim%r%ientropy, &
+         & sim%r%sgs_turb, sim%r%equilibrium_sgs, sim%r%iturb, &
+         & real(sim%r%smagorinsky_lilly_constant, kind=dp), sim%g%nstep_coarse)
+    call GPU_Error_Check(__FILE__, __LINE__)
+    call nvtxEndRange()
+
+  end subroutine gpu_source_hydro
+
+  !> @brief
   !> Perform the hydro integration on a GPU
   !>
   !> @detail
