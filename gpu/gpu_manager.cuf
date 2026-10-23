@@ -716,6 +716,37 @@ end subroutine gpu_allocate_sink
 !###########################################################
 !###########################################################
 !###########################################################
+#ifdef CORE
+subroutine gpu_allocate_core(sim)
+  use amr_parameters, ONLY: ndim
+  implicit none
+  type(ramses_t) :: sim
+  integer :: scan_size
+
+  allocate(core_xp(1:sim%r%ncoremax, 1:ndim))
+  allocate(core_vp(1:sim%r%ncoremax, 1:ndim))
+  allocate(core_fp(1:sim%r%ncoremax, 1:ndim))
+  allocate(core_jp(1:sim%r%ncoremax, 1:ndim))
+  allocate(core_mp(1:sim%r%ncoremax))
+  allocate(core_zp(1:sim%r%ncoremax))
+  allocate(core_tp(1:sim%r%ncoremax))
+  allocate(core_up(1:sim%r%ncoremax))
+  allocate(core_sortp(1:sim%r%ncoremax))
+  allocate(core_levelp(1:sim%r%ncoremax))
+  allocate(core_nacc(1:sim%r%ncoremax))
+  allocate(core_idp(1:sim%r%ncoremax))
+  allocate(prefix_sum_phys(1:sim%r%ncoremax))
+  ! Particle scratch and prefix sum arrays (cores use the large CIC deposit)
+  scan_size = sim%r%ncoremax
+  call ensure_part_swap_capacity(scan_size)
+  call ensure_scan_capacity(scan_size, 1)
+
+end subroutine gpu_allocate_core
+#endif
+!###########################################################
+!###########################################################
+!###########################################################
+!###########################################################
 subroutine gpu_allocate_tree(sim)
   use amr_parameters, ONLY: ndim
   implicit none

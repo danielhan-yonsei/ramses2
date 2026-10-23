@@ -92,6 +92,19 @@ module gpu_runner
   real(kind=dp),   device, allocatable, dimension(:)   :: sink_tm
   integer(i8b),    device, allocatable, dimension(:)   :: sink_idm
 
+#ifdef CORE
+  !> Arrays to hold the core particle variables on the device
+  real(kind=dp),   device, allocatable, dimension(:,:) :: core_xp, core_vp
+  real(kind=dp),   device, allocatable, dimension(:,:) :: core_fp, core_jp
+  real(kind=dp),   device, allocatable, dimension(:)   :: core_mp
+  real(kind=dp),   device, allocatable, dimension(:)   :: core_zp, core_tp, core_up
+  integer(kind=4), device, allocatable, dimension(:)   :: core_levelp, core_nacc
+  integer(kind=4), device, allocatable, target, dimension(:)   :: core_sortp
+  integer(i8b),    device, allocatable, dimension(:)   :: core_idp
+  !> Prefix sum in row order for the core split
+  integer(kind=4), device, allocatable, dimension(:)   :: prefix_sum_phys
+#endif
+
   !> Arrays to hold the merger tree particle variables on the device
   real(kind=dp),   device, allocatable, dimension(:,:) :: tree_xp, tree_vp
   real(kind=dp),   device, allocatable, dimension(:)   :: tree_mp
