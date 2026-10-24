@@ -89,6 +89,7 @@ subroutine input_part_zoom(mdl,r,g,p,m)
   real(kind=8)::dx,xx1,xx2,xx3
   real(kind=8)::dispmax=0.0
   integer(kind=8)::ipart_old
+  integer(kind=8)::id_offset
   integer(kind=8),dimension(1:g%ncpu+1)::start_ind
   real(kind=8),allocatable,dimension(:,:,:)::init_array
   real(kind=8),allocatable,dimension(:,:,:)::init_array_x
@@ -101,7 +102,11 @@ subroutine input_part_zoom(mdl,r,g,p,m)
 #if NDIM>2
 
   p%npart=0
+  id_offset=0
   do ilevel=r%levelmin,g%nlevelmax_part
+
+     ! Particle ids are offset by the size of the coarser initial condition grids
+     if(ilevel>r%levelmin)id_offset=id_offset+int(g%n1(ilevel-1),8)*g%n2(ilevel-1)*g%n3(ilevel-1)
 
      if(m%noct(ilevel)==0)cycle
 
@@ -261,7 +266,7 @@ subroutine input_part_zoom(mdl,r,g,p,m)
                  if(read_pos)then
                     p%xp(ipart,idim)=p%xp(ipart,idim)+init_array_x(i1,i2,i3)
                  endif
-                 p%idp(ipart)=i1+(i2-1)*g%n1(ilevel)+(i3-1)*g%n1(ilevel)*g%n2(ilevel)
+                 p%idp(ipart)=id_offset+i1+(i2-1)*int(g%n1(ilevel),8)+(i3-1)*int(g%n1(ilevel),8)*g%n2(ilevel)
               endif
            end do
            ! End loop over cells
