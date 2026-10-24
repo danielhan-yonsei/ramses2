@@ -32,6 +32,27 @@ contains
   end subroutine turb_interp_field_kernel
 
   !=====================================================================================
+  ! Acceleration field from the backward FFT of its spectrum, as FFT_3D and turb_next_field:
+  ! afield = real part / TURB_GS**3 * turb_norm * turb_rms, elementwise.
+  ! Written by Daniel Han (mini-ramses version October 2026).
+  !=====================================================================================
+  attributes(global) subroutine turb_normalise_kernel(fft_field, afield, turb_norm, &
+       & turb_rms, ntot)
+    complex(kind=8), device :: fft_field(*)
+    real(kind=8), device :: afield(*)
+    real(kind=8), intent(in), value :: turb_norm, turb_rms
+    integer(kind=4), intent(in), value :: ntot
+
+    integer :: i
+
+    i = (blockIdx%x - 1)*blockDim%x + threadIdx%x
+    if (i > ntot) return
+
+    afield(i) = real(fft_field(i), kind=8) / (turb_gs_real**3) * turb_norm * turb_rms
+
+  end subroutine turb_normalise_kernel
+
+  !=====================================================================================
   ! Turbulent driving force.
   ! Per (cell, oct): compute cell-centre position, read density from uold, apply the
   ! density filter, trilinearly interpolate the 64^3 afield_now onto the cell, and store

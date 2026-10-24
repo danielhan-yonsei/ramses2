@@ -34,9 +34,15 @@ module gpu_runner
   real(kind=dp), device, allocatable, dimension(:,:,:) :: b_roll2, b_my0, b_y0, b_cf, eta_nimhd
   real(kind=dp), device, allocatable, dimension(:,:) :: e_acc, e_acc0
 
-  !> Arrays to hold Turbulent acceleration fields on the device
-  real(kind=8), device, allocatable, dimension(:,:,:,:) :: afield_last_d, afield_next_d, afield_now_d
+  !> Arrays to hold Turbulent acceleration fields and spectra on the device,
+  !> the last ones in slot iturb_last and the next ones in slot 3-iturb_last
+  real(kind=8), device, allocatable, dimension(:,:,:,:,:) :: afield_d
+  real(kind=8), device, allocatable, dimension(:,:,:,:) :: afield_now_d
+  complex(kind=8), device, allocatable, dimension(:,:,:,:,:) :: turb_spec_d
+  complex(kind=8), device, allocatable, dimension(:,:,:,:) :: turb_fft_d
   real(kind=dp), device, allocatable, dimension(:,:,:) :: fturb
+  integer :: iturb_last = 1
+  integer :: turb_fft_plan
 
   !> Arrays to hold the gravity variables on the device
   real(kind=dp), device, allocatable, dimension(:,:) :: phi, rho, nref, phi_old
@@ -443,8 +449,8 @@ contains
   !> Time-interpolate the turbulent acceleration field on the device.
   !>
   !> @detail
-  !> afield_now_d = next_tfrac*afield_last_d + last_tfrac*afield_next_d, computed from the
-  !> host turbulence times.
+  !> afield_now_d = next_tfrac*afield_last + last_tfrac*afield_next, from the two slots of
+  !> afield_d, computed from the host turbulence times.
   !>
   !> @param[in] sim : The simulation object
   !>
@@ -469,12 +475,58 @@ contains
     call nvtxStartRange("GPU turb_interp", color=0)!green
     ! Pass element references so the flattened (assumed-size) kernel dummies bind to the
     ! contiguous base address of each field.
-    call turb_interp_field_kernel<<<num_blocks, num_threads>>>(afield_last_d(1,0,0,0), &
-         & afield_next_d(1,0,0,0), afield_now_d(1,0,0,0), last_tfrac, next_tfrac, ntot)
+    call turb_interp_field_kernel<<<num_blocks, num_threads>>>(afield_d(1,0,0,0,iturb_last), &
+         & afield_d(1,0,0,0,3-iturb_last), afield_now_d(1,0,0,0), last_tfrac, next_tfrac, ntot)
     call GPU_Error_Check(__FILE__, __LINE__)
     call nvtxEndRange()
 
   end subroutine gpu_turb_interp
+
+  !> @brief
+  !> Transform the next turbulent spectrum into the next acceleration field on the device.
+  !>
+  !> @detail
+  !> As FFT_3D and turb_next_field on the host: backward FFT of each component, real part
+  !> divided by TURB_GS**3, times turb_norm*turb_rms.
+  !>
+  !> @param[in] sim : The simulation object
+  !>
+  ! Written by Daniel Han (mini-ramses version October 2026).
+  subroutine gpu_turb_transform(sim)
+    use nvtx
+#ifdef TURB
+    use cufft, only: cufftExecZ2Z, CUFFT_INVERSE, CUFFT_SUCCESS
+#endif
+    use turb_device, only: turb_normalise_kernel
+    use turb_commons, only: TURB_GS
+    use ramses_commons, only: ramses_t
+    type(ramses_t), intent(inout)::sim
+
+    integer(kind=4) :: ntot
+    integer :: inext, num_threads, num_blocks
+#ifdef TURB
+    integer :: istat
+#endif
+
+    inext = 3 - iturb_last
+    ntot = ndim*TURB_GS**ndim
+    num_threads = 256
+    num_blocks = (ntot + num_threads - 1)/num_threads
+
+    call nvtxStartRange("GPU turb_transform", color=0)!green
+#ifdef TURB
+    istat = cufftExecZ2Z(turb_fft_plan, turb_spec_d(1,0,0,0,inext), turb_fft_d, CUFFT_INVERSE)
+    if (istat /= CUFFT_SUCCESS) then
+       write(*,*)'Error: gpu_turb_transform: cufftExecZ2Z failed with status ',istat
+       error stop
+    endif
+#endif
+    call turb_normalise_kernel<<<num_blocks, num_threads>>>(turb_fft_d(1,0,0,0), &
+         & afield_d(1,0,0,0,inext), sim%turb%turb_norm, sim%r%turb_rms, ntot)
+    call GPU_Error_Check(__FILE__, __LINE__)
+    call nvtxEndRange()
+
+  end subroutine gpu_turb_transform
 
   !> @brief
   !> Compute the turbulent driving force on a level, filling fturb.
