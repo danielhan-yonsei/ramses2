@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import numpy as np
 import matplotlib.pyplot as plt
+from plot_backend import set_backend
 import matplotlib.colors as colors
 import argparse
 import ramses as ram
@@ -16,6 +17,7 @@ parser.add_argument("--zcen", help="specify the region center z-coordinate")
 parser.add_argument("--rad", help="specify the region radius")
 parser.add_argument("--bin", help="specify the bin size in Gyr")
 args = parser.parse_args()
+no_display = set_backend()
 # path the the file
 path = args.path
 radius = args.rad
@@ -104,4 +106,5 @@ ax1.set_xlim(bins[0], bins[-1])
 if args.out:
     plt.savefig(args.out)
 
-plt.show()
+if not no_display:
+    plt.show()

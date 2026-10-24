@@ -13,6 +13,7 @@ import argparse
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+from plot_backend import set_backend
 import matplotlib.cm as cm
 
 def natural_sort_key(s):
@@ -58,6 +59,7 @@ def parse_args():
 
 def main():
     args = parse_args()
+    no_display = set_backend()
     sink_dir = args.dir
 
     if not os.path.isdir(sink_dir):
@@ -189,7 +191,8 @@ def main():
         fig.savefig(args.out, dpi=300, bbox_inches="tight")
         print(f"Plot saved to '{args.out}'")
 
-    plt.show()
+    if not no_display:
+        plt.show()
     plt.close(fig)
 
 if __name__ == "__main__":

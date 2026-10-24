@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import numpy as np
 import matplotlib.pyplot as plt
+from plot_backend import set_backend
 import matplotlib.colors as colors
 import argparse
 import ramses as ram
@@ -20,6 +21,7 @@ parser.add_argument("--ycen", help="specify the image center y-coordinate")
 parser.add_argument("--zcen", help="specify the image center z-coordinate")
 parser.add_argument("--rad", help="specify the image radius")
 args = parser.parse_args()
+no_display = set_backend()
 # path the the file
 path = args.path
 prefix = args.prefix
@@ -93,4 +95,5 @@ plt.title('Mass-weighted Histogram with Logarithmic Color Scale')
 if args.out:
     plt.savefig(args.out)
 
-plt.show()
+if not no_display:
+    plt.show()

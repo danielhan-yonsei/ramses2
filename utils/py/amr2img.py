@@ -1,15 +1,9 @@
 #!/usr/bin/env python3
 import numpy as np
 import matplotlib.pyplot as plt
+from plot_backend import set_backend
 import argparse
 import ramses as ram
-
-# Check if we should use non-interactive backend
-import sys
-if "--no-display" in sys.argv:
-    import matplotlib
-    matplotlib.use('Agg')  # Non-interactive backend
-    print("Using non-interactive backend for batch processing")
 
 parser = argparse.ArgumentParser()
 parser.add_argument("nout", help="enter output number")
@@ -47,7 +41,7 @@ sink = args.sink
 axis = args.dir
 log = args.log
 grid = args.grid
-no_display = args.no_display
+no_display = set_backend(args.no_display)
 
 # Convert vmin and vmax to float if provided
 if vmin is not None:

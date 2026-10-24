@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import numpy as np
 import matplotlib.pyplot as plt
+from plot_backend import set_backend
 from scipy.io import FortranFile
 from astropy.io import ascii
 import argparse
@@ -13,6 +14,7 @@ parser.add_argument("--log", help="plot log variable",action="store_true")
 parser.add_argument("--sym", help="use a circle for each cell",action="store_true")
 parser.add_argument("--out", help="output a png image")
 args = parser.parse_args()
+no_display = set_backend()
 print("Reading "+args.file)
 
 # path the the file
@@ -104,7 +106,8 @@ if do_mag:
 
     if args.out:
         plt.savefig(args.out)
-    plt.show()
+    if not no_display:
+        plt.show()
 
 if args.sym:
     plt.plot(x, dt, "o")
@@ -118,4 +121,5 @@ plt.ylabel('time step')
 
 if args.out:
     plt.savefig(args.out)
-plt.show()
+if not no_display:
+    plt.show()

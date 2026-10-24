@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import numpy as np
 import matplotlib.pyplot as plt
+from plot_backend import set_backend
 from scipy.io import FortranFile
 from astropy.io import ascii
 import argparse
@@ -12,6 +13,7 @@ parser.add_argument("--sym", help="use a circle for each cell",action="store_tru
 parser.add_argument("--out", help="output a png image")
 parser.add_argument("--no_display", help="do not display the image",action="store_true")
 args = parser.parse_args()
+args.no_display = set_backend(args.no_display)
 print("Reading "+args.file)
 
 # path the the file
