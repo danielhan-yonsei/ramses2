@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 import numpy as np
-import matplotlib.pyplot as plt
+import matplotlib
 from scipy.io import FortranFile
 import argparse
 
@@ -13,6 +13,23 @@ parser.add_argument("--min", help="minimum value", type=float)
 parser.add_argument("--max", help="maximum value", type=float)
 parser.add_argument("--no-display", help="suppress plot display", action="store_true")
 args = parser.parse_args()
+
+# use a non-interactive backend when not displaying; otherwise fall back
+# to TkAgg, then Agg, if the default GUI backend (e.g. Qt) is not installed
+if args.no_display:
+    matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+if not args.no_display:
+    for backend in [None, "TkAgg"]:
+        try:
+            plt.switch_backend(backend or matplotlib.rcParams["backend"])
+            break
+        except ImportError:
+            pass
+    else:
+        print("No GUI backend available: disabling display (use --out to save)")
+        plt.switch_backend("Agg")
+        args.no_display = True
 print("Reading "+args.file)
 
 # path the the file
