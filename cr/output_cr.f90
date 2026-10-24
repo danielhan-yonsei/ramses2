@@ -37,7 +37,7 @@ end subroutine r_output_cr
 !###################################################
 !###################################################
 subroutine output_cr(s,filename)
-  use amr_parameters, only: ndim,twotondim, flen
+  use amr_parameters, only: ndim,twotondim, flen, nbuf_io
   use cr_parameters, only: ncruvar, ncrgrp
   use ramses_commons, only: ramses_t, open_file, close_file
   implicit none
@@ -46,32 +46,41 @@ subroutine output_cr(s,filename)
   !-----------------------------------
   ! Output CR data in file
   !-----------------------------------
-  integer::ilevel,igrid,ilun
+  integer::ilevel,igrid,ilun,i,nchunk
   integer(kind=8),dimension(s%r%levelmin:s%r%nlevelmax)::nskip
-  real(kind=4),dimension(1:twotondim,1:ncruvar)::qout
+  real(kind=4),allocatable,dimension(:,:,:)::qbuf
 #ifdef DO_CR
   real(kind=8),dimension(1:twotondim,1:ncruvar)::cruold
 #endif
   logical::overflow_reported=.false.
 
   associate(r=>s%r,g=>s%g,m=>s%m,mdl=>s%mdl)
+  ! Buffer octs to write in large chunks
+  nchunk=max(1,nbuf_io/(4*twotondim*ncruvar))
+  allocate(qbuf(1:twotondim,1:ncruvar,1:nchunk))
   call open_file(s,filename,nskip,ilun)
   overflow_reported=.false.
   do ilevel=r%levelmin,r%nlevelmax
      write(ilun,POS=nskip(ilevel))
+     i=0
      do igrid=m%head(ilevel),m%tail(ilevel)
+        i=i+1
 #ifdef DO_CR
         cruold=m%cruold(:,:,igrid)
-        qout=real(cruold,kind=4)
+        qbuf(:,:,i)=real(cruold,kind=4)
 #endif
-        if(maxval(dble(abs(qout))).gt.1d31 .and. s%g%myid==1 .and. .not. overflow_reported) then
+        if(maxval(dble(abs(qbuf(:,:,i)))).gt.1d31 .and. s%g%myid==1 .and. .not. overflow_reported) then
             print*,'The CR variables have very high values and are overflowing in the outputs'
             overflow_reported=.true.
         endif
-        write(ilun)qout
+        if(i==nchunk.or.igrid==m%tail(ilevel))then
+           write(ilun)qbuf(:,:,1:i)
+           i=0
+        endif
      end do
   end do
   call close_file(s,filename,nskip,ilun)
+  deallocate(qbuf)
   end associate
 
 end subroutine output_cr
@@ -80,7 +89,7 @@ end subroutine output_cr
 !###################################################
 !###################################################
 subroutine backup_cr(r,g,m,mdl,filename)
-  use amr_parameters, only: ndim,flen
+  use amr_parameters, only: ndim,flen,dp,twotondim,nbuf_io
   use cr_parameters, only: ncruvar
   use amr_commons, only: run_t,global_t,mesh_t
   use mdl_module
@@ -91,10 +100,12 @@ subroutine backup_cr(r,g,m,mdl,filename)
   type(mdl_t)::mdl
   character(LEN=flen)::filename
 
-  integer::ilevel,igrid,ilun,ierr
+  integer::ilevel,igrid,ilun,ierr,nchunk
   character(LEN=5)::nchar
   character(LEN=flen)::fileloc
   logical::file_exist
+  ! Write octs in large chunks
+  nchunk=max(1,nbuf_io/((storage_size(1.0_dp)/8)*twotondim*ncruvar))
   ilun=10+mdl_core(mdl)
   call title(g%myid,nchar)
   fileloc=TRIM(filename)//TRIM(nchar)
@@ -112,11 +123,12 @@ subroutine backup_cr(r,g,m,mdl,filename)
      write(ilun)m%noct(ilevel)
   enddo
   do ilevel=r%levelmin,r%nlevelmax
-     do igrid=m%head(ilevel),m%tail(ilevel)
 #ifdef DO_CR
-        write(ilun)m%cruold(:,:,igrid)
-#endif
+     ! Write contiguous slices of cruold directly
+     do igrid=m%head(ilevel),m%tail(ilevel),nchunk
+        write(ilun)m%cruold(:,:,igrid:min(igrid+nchunk-1,m%tail(ilevel)))
      end do
+#endif
   enddo
   close(ilun)
 end subroutine backup_cr

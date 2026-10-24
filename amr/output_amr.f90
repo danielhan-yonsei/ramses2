@@ -544,7 +544,7 @@ end subroutine r_output_amr
 !#########################################################################
 !#########################################################################
 subroutine output_amr(s,filename)
-  use amr_parameters, only: ndim,flen,twotondim
+  use amr_parameters, only: ndim,flen,twotondim,nbuf_io
   use ramses_commons, only: ramses_t,open_file,close_file
   use mdl_module
   implicit none
@@ -553,26 +553,39 @@ subroutine output_amr(s,filename)
   !-----------------------------------
   ! Output amr grid to file
   !-----------------------------------
-  integer::ilun,ilevel,igrid,ind,refined_int
+  integer::ilun,ilevel,igrid,ind,refined_int,i,nchunk
   integer(kind=8),dimension(s%r%levelmin:s%r%nlevelmax)::nskip
+  integer(kind=4),allocatable,dimension(:,:)::ibuf
 
   associate(r=>s%r,g=>s%g,m=>s%m)
+
+  ! Buffer octs to write in large chunks
+  nchunk=max(1,nbuf_io/(4*(ndim+1)))
+  allocate(ibuf(1:ndim+1,1:nchunk))
 
   call open_file(s,filename,nskip,ilun)
 
   do ilevel=r%levelmin,r%nlevelmax
      write(ilun,POS=nskip(ilevel))
+     i=0
      do igrid=m%head(ilevel),m%tail(ilevel)
-        write(ilun)m%grid(igrid)%ckey
+        i=i+1
+        ibuf(1:ndim,i)=m%grid(igrid)%ckey
         refined_int=0
         do ind=1,twotondim
            if(m%grid(igrid)%refined(ind))refined_int=ibset(refined_int,ind-1)
         end do
-        write(ilun)refined_int
+        ibuf(ndim+1,i)=refined_int
+        if(i==nchunk.or.igrid==m%tail(ilevel))then
+           write(ilun)ibuf(:,1:i)
+           i=0
+        endif
      end do
   end do
 
   call close_file(s,filename,nskip,ilun)
+
+  deallocate(ibuf)
 
   end associate
 
@@ -582,7 +595,7 @@ end subroutine output_amr
 !#########################################################################
 !#########################################################################
 subroutine backup_amr(r,g,m,mdl,filename)
-  use amr_parameters, only: ndim, flen, twotondim
+  use amr_parameters, only: ndim, flen, twotondim, nbuf_io
   use amr_commons, only: run_t, global_t, mesh_t
   use mdl_module
   implicit none
@@ -594,10 +607,15 @@ subroutine backup_amr(r,g,m,mdl,filename)
   !-----------------------------------
   ! Output amr grid to restart file
   !-----------------------------------
-  integer::ilun,ierr,ilevel,igrid,ind,refined_int
+  integer::ilun,ierr,ilevel,igrid,ind,refined_int,i,nchunk
   character(LEN=flen)::fileloc
   character(LEN=5)::nchar
   logical::file_exist
+  integer(kind=4),allocatable,dimension(:,:)::ibuf
+
+  ! Buffer octs to write in large chunks
+  nchunk=max(1,nbuf_io/(4*(ndim+1)))
+  allocate(ibuf(1:ndim+1,1:nchunk))
 
   ilun=10+mdl_core(mdl)
   call title(g%myid,nchar)
@@ -615,16 +633,24 @@ subroutine backup_amr(r,g,m,mdl,filename)
      write(ilun)m%noct(ilevel)
   end do
   do ilevel=r%levelmin,r%nlevelmax
+     i=0
      do igrid=m%head(ilevel),m%tail(ilevel)
-        write(ilun)m%grid(igrid)%ckey
+        i=i+1
+        ibuf(1:ndim,i)=m%grid(igrid)%ckey
         refined_int=0
         do ind=1,twotondim
            if(m%grid(igrid)%refined(ind))refined_int=ibset(refined_int,ind-1)
         end do
-        write(ilun)refined_int
+        ibuf(ndim+1,i)=refined_int
+        if(i==nchunk.or.igrid==m%tail(ilevel))then
+           write(ilun)ibuf(:,1:i)
+           i=0
+        endif
      end do
   end do
   close(ilun)
+
+  deallocate(ibuf)
 
 end subroutine backup_amr
 !#########################################################################

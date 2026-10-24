@@ -38,7 +38,7 @@ end subroutine r_output_hydro
 !###################################################
 !###################################################
 subroutine output_hydro(s,filename)
-  use amr_parameters, only: ndim, twotondim, flen
+  use amr_parameters, only: ndim, twotondim, flen, nbuf_io
   use hydro_parameters, only: nvar, nprim, nener,ie
   use ramses_commons, only: ramses_t, open_file, close_file
   implicit none
@@ -47,9 +47,9 @@ subroutine output_hydro(s,filename)
   !-----------------------------------
   ! Output hydro data in file
   !-----------------------------------
-  integer::ilevel,igrid,ilun,irad,n,ind
+  integer::ilevel,igrid,ilun,irad,n,ind,i,nchunk
   integer(kind=8),dimension(s%r%levelmin:s%r%nlevelmax)::nskip
-  real(kind=4),dimension(1:twotondim,1:nprim)::qout
+  real(kind=4),allocatable,dimension(:,:,:)::qbuf
   real(kind=8),dimension(1:twotondim,1:nprim)::qold
   real(kind=8),dimension(1:twotondim,1:nvar)::uold
   real(kind=8),dimension(1:twotondim,1:6)::bold
@@ -60,12 +60,17 @@ subroutine output_hydro(s,filename)
 
 #ifdef HYDRO
 
+  ! Buffer octs to write in large chunks
+  nchunk=max(1,nbuf_io/(4*twotondim*nprim))
+  allocate(qbuf(1:twotondim,1:nprim,1:nchunk))
+
   call open_file(s,filename,nskip,ilun)
 
   do ilevel=r%levelmin,r%nlevelmax
 
      write(ilun,POS=nskip(ilevel))
 
+     i=0
      do igrid=m%head(ilevel),m%tail(ilevel)
 
         uold=m%uold(:,:,igrid)
@@ -128,13 +133,19 @@ subroutine output_hydro(s,filename)
            end do
 #endif
         end do
-        qout=real(qold,kind=4)
-        write(ilun)qout
+        i=i+1
+        qbuf(:,:,i)=real(qold,kind=4)
+        if(i==nchunk.or.igrid==m%tail(ilevel))then
+           write(ilun)qbuf(:,:,1:i)
+           i=0
+        endif
 
      end do
   enddo
 
   call close_file(s,filename,nskip,ilun)
+
+  deallocate(qbuf)
 
 #endif
 
@@ -146,7 +157,7 @@ end subroutine output_hydro
 !###################################################
 !###################################################
 subroutine backup_hydro(r,g,m,mdl,filename)
-  use amr_parameters, only: ndim, flen
+  use amr_parameters, only: ndim, flen, dp, twotondim, nbuf_io
   use hydro_parameters, only: nvar
   use amr_commons, only: run_t, global_t, mesh_t
   use mdl_module
@@ -157,12 +168,24 @@ subroutine backup_hydro(r,g,m,mdl,filename)
   type(mdl_t)::mdl
   character(LEN=flen)::filename
 
-  integer::ilevel,igrid,ilun,ierr
+  integer::ilevel,igrid,ilun,ierr,nchunk
   character(LEN=5)::nchar
   character(LEN=flen)::fileloc
   logical::file_exist
+#ifdef MHD
+  integer::i
+  real(dp),allocatable,dimension(:,:,:)::dbuf
+#endif
 
 #ifdef HYDRO
+  ! Write octs in large chunks
+#ifdef MHD
+  nchunk=max(1,nbuf_io/((storage_size(1.0_dp)/8)*twotondim*(nvar+6)))
+  allocate(dbuf(1:twotondim,1:nvar+6,1:nchunk))
+#else
+  nchunk=max(1,nbuf_io/((storage_size(1.0_dp)/8)*twotondim*nvar))
+#endif
+
   ilun=10+mdl_core(mdl)
   call title(g%myid,nchar)
   fileloc=TRIM(filename)//TRIM(nchar)
@@ -184,14 +207,30 @@ subroutine backup_hydro(r,g,m,mdl,filename)
      write(ilun)m%noct(ilevel)
   enddo
   do ilevel=r%levelmin,r%nlevelmax
-     do igrid=m%head(ilevel),m%tail(ilevel)
-        write(ilun)m%uold(:,:,igrid)
 #ifdef MHD
-        write(ilun)m%bold(:,:,igrid)
-#endif
+     ! Interleave uold and bold for each oct
+     i=0
+     do igrid=m%head(ilevel),m%tail(ilevel)
+        i=i+1
+        dbuf(:,1:nvar,i)=m%uold(:,:,igrid)
+        dbuf(:,nvar+1:nvar+6,i)=m%bold(:,:,igrid)
+        if(i==nchunk.or.igrid==m%tail(ilevel))then
+           write(ilun)dbuf(:,:,1:i)
+           i=0
+        endif
      end do
+#else
+     ! Write contiguous slices of uold directly
+     do igrid=m%head(ilevel),m%tail(ilevel),nchunk
+        write(ilun)m%uold(:,:,igrid:min(igrid+nchunk-1,m%tail(ilevel)))
+     end do
+#endif
   enddo
   close(ilun)
+
+#ifdef MHD
+  deallocate(dbuf)
+#endif
 
 #endif
 

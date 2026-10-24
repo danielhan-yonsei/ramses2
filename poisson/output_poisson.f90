@@ -37,7 +37,7 @@ end subroutine r_output_poisson
 !#########################################################
 !#########################################################
 subroutine output_poisson(s,filename)
-  use amr_parameters, only: ndim,twotondim,flen
+  use amr_parameters, only: ndim,twotondim,flen,nbuf_io
   use ramses_commons, only: ramses_t,open_file,close_file
   use mdl_module
   implicit none
@@ -46,28 +46,37 @@ subroutine output_poisson(s,filename)
   !-----------------------------------
   ! Output grav data in file
   !-----------------------------------
-  integer::ilevel,igrid,ilun
+  integer::ilevel,igrid,ilun,i,nchunk
   integer(kind=8),dimension(s%r%levelmin:s%r%nlevelmax)::nskip
-  real(kind=4),dimension(1:twotondim,1:ndim)::f
-  real(kind=4),dimension(1:twotondim)::phi
+  real(kind=4),allocatable,dimension(:,:,:)::fbuf
 
   associate(r=>s%r,g=>s%g,m=>s%m,mdl=>s%mdl)
 
 #ifdef GRAV
 
+  ! Buffer octs to write in large chunks
+  nchunk=max(1,nbuf_io/(4*twotondim*(ndim+1)))
+  allocate(fbuf(1:twotondim,1:ndim+1,1:nchunk))
+
   call open_file(s,filename,nskip,ilun)
 
   do ilevel=r%levelmin,r%nlevelmax
      write(ilun,POS=nskip(ilevel))
+     i=0
      do igrid=m%head(ilevel),m%tail(ilevel)
-        phi(1:twotondim)=real(m%phi(1:twotondim,igrid),kind=4)
-        f(1:twotondim,1:ndim)=real(m%f(1:twotondim,1:ndim,igrid),kind=4)
-        write(ilun)phi
-        write(ilun)f
+        i=i+1
+        fbuf(:,1,i)=real(m%phi(1:twotondim,igrid),kind=4)
+        fbuf(:,2:ndim+1,i)=real(m%f(1:twotondim,1:ndim,igrid),kind=4)
+        if(i==nchunk.or.igrid==m%tail(ilevel))then
+           write(ilun)fbuf(:,:,1:i)
+           i=0
+        endif
      end do
   enddo
 
   call close_file(s,filename,nskip,ilun)
+
+  deallocate(fbuf)
 
 #endif
 
@@ -79,7 +88,7 @@ end subroutine output_poisson
 !#########################################################
 !#########################################################
 subroutine backup_poisson(r,g,m,mdl,filename)
-  use amr_parameters, only: ndim,flen
+  use amr_parameters, only: ndim,flen,dp,twotondim,nbuf_io
   use hydro_parameters, only: nvar
   use amr_commons, only: run_t,global_t,mesh_t
   use mdl_module
@@ -94,6 +103,14 @@ subroutine backup_poisson(r,g,m,mdl,filename)
   character(LEN=5)::nchar
   character(LEN=flen)::fileloc
   logical::file_exist
+#ifdef GRAV
+  integer::i,nchunk
+  real(dp),allocatable,dimension(:,:,:)::dbuf
+
+  ! Buffer octs to write in large chunks (f always has 3 components)
+  nchunk=max(1,nbuf_io/((storage_size(1.0_dp)/8)*twotondim*4))
+  allocate(dbuf(1:twotondim,1:4,1:nchunk))
+#endif
 
   ilun=10+mdl_core(mdl)
   call title(g%myid,nchar)
@@ -113,13 +130,23 @@ subroutine backup_poisson(r,g,m,mdl,filename)
   enddo
 #ifdef GRAV
   do ilevel=r%levelmin,r%nlevelmax
+     i=0
      do igrid=m%head(ilevel),m%tail(ilevel)
-        write(ilun)m%phi(:,igrid)
-        write(ilun)m%f(:,:,igrid)
+        i=i+1
+        dbuf(:,1,i)=m%phi(:,igrid)
+        dbuf(:,2:4,i)=m%f(:,:,igrid)
+        if(i==nchunk.or.igrid==m%tail(ilevel))then
+           write(ilun)dbuf(:,:,1:i)
+           i=0
+        endif
      end do
   enddo
 #endif
   close(ilun)
+
+#ifdef GRAV
+  deallocate(dbuf)
+#endif
 
 end subroutine backup_poisson
 !###################################################

@@ -54,6 +54,9 @@ module amr_parameters
   integer,parameter::nvector=NVECTOR
 #endif
 
+  ! Size in bytes of the buffers used for grid output
+  integer,parameter::nbuf_io=4194304
+
   ! Expansion factor look-up table size
   integer,parameter::n_frw=1000
 
