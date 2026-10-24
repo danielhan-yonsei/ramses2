@@ -174,11 +174,6 @@ contains
      write(*,*)'Error: cores on more than one rank are not supported on GPU'
      nml_ok=.false.
   endif
-  ! Core phases that are not on the GPU yet
-  if(core.and.core_form)then
-     write(*,*)'Error: core_form is not supported on GPU yet'
-     nml_ok=.false.
-  endif
 #endif
 
   s%r%core=core

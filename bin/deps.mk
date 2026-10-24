@@ -187,6 +187,7 @@ clump_finder.o: gpu_clump.o gpu_manager.o
 clump_merger.o: gpu_clump.o
 cooling_fine.o: gpu_cooling.o gpu_runner.o
 core_evolution.o: gpu_core.o
+core_formation.o: gpu_phew.o
 core_merger.o: gpu_core_merger.o
 core_retirement.o: gpu_core_star.o
 core_to_star_formation.o: gpu_core_star.o
@@ -209,6 +210,7 @@ gpu_mg.o: amr_parameters.o gpu_utils.o hydro_parameters.o oct_commons.o
 gpu_mpi.o: amr_parameters.o cache.o cache_commons.o gpu_hydro.o gpu_utils.o hash.o hydro_commons.o hydro_parameters.o marshal.o mdl.o nbors_utils.o oct_commons.o ramses_commons.o
 gpu_nbor.o: amr_parameters.o gpu_utils.o oct_commons.o
 gpu_part.o: amr_parameters.o cub_module_radix_sort_f.o gpu_refine.o gpu_runner.o gpu_utils.o oct_commons.o ramses_commons.o
+gpu_phew.o: amr_parameters.o constants.o cub_module_radix_sort_f.o gpu_clump.o gpu_part.o gpu_runner.o gpu_utils.o hydro_parameters.o oct_commons.o ramses_commons.o
 gpu_refine.o: amr_parameters.o gpu_utils.o hydro_parameters.o oct_commons.o
 gpu_rho.o: amr_parameters.o gpu_utils.o hydro_parameters.o oct_commons.o
 gpu_runner.o: amr_parameters.o cache.o cache_commons.o constants.o cub_inclusive_scan_f.o cub_module_radix_sort_f.o gpu_cooling.o gpu_feedback.o gpu_flag.o gpu_hydro.o gpu_mg.o gpu_refine.o gpu_rho.o gpu_star.o gpu_turb.o gpu_utils.o hydro_parameters.o oct_commons.o ramses_commons.o turb_commons.o
@@ -248,7 +250,7 @@ endif
 ifeq ($(CORE),1)
 amr_step.o: core_step.o core_to_star_formation.o
 flag_utils.o: pm_parameters.o
-init_part.o: amr_commons.o amr_parameters.o pm_commons.o pm_parameters.o
+init_part.o: amr_commons.o amr_parameters.o core_formation.o pm_commons.o pm_parameters.o
 input_part_ascii.o: amr_commons.o amr_parameters.o mdl.o mdl_commons.o pm_commons.o ramses_commons.o
 input_part_ramses.o: pm_parameters.o
 input_part_restart.o: pm_parameters.o

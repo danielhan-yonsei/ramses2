@@ -1,0 +1,1283 @@
+#ifdef MHD
+#error "Core formation with MHD is not yet implemented on GPU"
+#endif
+#if NENER>0
+#error "Core formation with NENER>0 is not yet implemented on GPU"
+#endif
+!> GPU core clump finder and core formation.
+module phew_device
+  use amr_parameters, only: dp, ndim, twotondim, i8b
+  use hydro_parameters, only: nvar
+  use oct_commons, only: oct
+  use gpu_utils
+  use cudafor
+  use gpu_runner, only: grid, rho, uold, f, hash_key, hash_val, periodic, box_size, &
+       & box_ckey_min, box_ckey_max, ckey_max, key_off, d_skip, prefix_sum, swap_local, gpu_scan, &
+       & core_xp, core_vp, core_fp, core_jp, core_mp, core_zp, core_tp, core_up, &
+       & core_levelp, core_nacc, core_idp
+  use clump_device, only: xnbor_const, gpu_smooth_rho, flag_test_cells_kernel, &
+       & scatter_test_cells_kernel, pointer_jump_kernel, &
+       & launch_particle_id, compute_sink_swap_table
+  use part_device, only: dtnew_part_d
+  implicit none
+  private
+  public :: gpu_allocate_phew, gpu_core_clump, gpu_core_formation
+
+  integer, parameter :: nnbor = 56       ! neighbours of a test cell (xnbor_const)
+  integer, parameter :: ncell_block = 4  ! test cells per block in the neighbour kernel
+  integer, parameter :: nprop = 128      ! threads per peak in the property kernels
+
+  ! -------------------------------------------------------------
+  ! Test cells, by decreasing density (grown to the largest ntest)
+  ! -------------------------------------------------------------
+  integer, device, allocatable, dimension(:)       :: phew_grid, phew_cell, phew_level
+  real(kind=dp), device, allocatable, dimension(:) :: phew_dens
+  ! The same in collect order, before the sort
+  integer, device, allocatable, dimension(:)       :: phew_grid0, phew_cell0, phew_level0
+  real(kind=dp), device, allocatable, dimension(:) :: phew_dens0
+  ! Densest neighbour then peak cell (test index), peak number, peak patch label
+  integer, device, allocatable, dimension(:)       :: phew_parent, phew_peak, phew_label
+  ! Test index of the 56 neighbours of each test cell (0 if not a test cell)
+  integer, device, allocatable, dimension(:,:)     :: phew_nbor
+  ! Sort keys and orders
+  integer(kind=8), device, allocatable, target, dimension(:) :: phew_key_in, phew_key_out
+  integer, device, allocatable, target, dimension(:)         :: phew_order_in, phew_order_out
+
+  ! Test index of each cell of the mesh (0 if not a test cell)
+  integer, device, allocatable, dimension(:,:) :: phew_map
+  ! Test index of the cell of each core (0 if none)
+  integer, device, allocatable, dimension(:)   :: phew_core_test
+
+  ! -------------------------------------------------------------
+  ! Peaks (grown to the largest npeak)
+  ! -------------------------------------------------------------
+  integer, device, allocatable, dimension(:)         :: phew_peak_test, phew_new_peak, phew_alive
+  integer, device, allocatable, dimension(:)         :: phew_ncore, phew_n_cells
+  integer, device, allocatable, dimension(:)         :: phew_begin, phew_end
+  integer(kind=8), device, allocatable, dimension(:) :: phew_saddle_edge
+  real(kind=dp), device, allocatable, dimension(:)   :: phew_max_dens, phew_saddle_dens, phew_relevance
+  real(kind=dp), device, allocatable, dimension(:,:) :: phew_peak_pos, phew_peak_vel, phew_peak_acc
+  ! Mass4, centre of mass, velocity, virial terms and contraction of each peak patch
+  real(kind=dp), device, allocatable, dimension(:)     :: phew_mass4
+  real(kind=dp), device, allocatable, dimension(:)     :: phew_kinetic, phew_thermal, phew_grav, phew_idot
+  real(kind=dp), device, allocatable, dimension(:,:)   :: phew_gas_com, phew_gas_vel
+  real(kind=dp), device, allocatable, dimension(:,:,:) :: phew_inertia, phew_idot_tensor
+  integer, device, allocatable, dimension(:)           :: phew_bound, phew_contracting
+
+contains
+
+  include 'gpu_hash.cuf'
+
+  ! =========================================================================
+  ! CUDA Device: Grid and cell of the cell with the given level and key (as in gpu_clump.cuf)
+  ! =========================================================================
+  attributes(device) subroutine get_parent_cell_device(hash_nbor, igridn, icelln, hash_key, hash_val, hash_size)
+    integer(kind=8), intent(in) :: hash_nbor(0:3)
+    integer, intent(out) :: igridn, icelln
+    integer(kind=8), device :: hash_key(*)
+    integer(kind=4), device :: hash_val(*)
+    integer, value :: hash_size
+
+    integer :: ilev_par
+    integer(kind=8) :: ix, iy, iz, nx, offset, key
+    integer :: bit(3)
+
+    ilev_par = hash_nbor(0) - 1
+
+    ix = hash_nbor(1) / 2
+    iy = hash_nbor(2) / 2
+    iz = hash_nbor(3) / 2
+
+    bit(1) = hash_nbor(1) - 2 * ix
+    bit(2) = hash_nbor(2) - 2 * iy
+    bit(3) = hash_nbor(3) - 2 * iz
+    icelln = 1 + bit(1) + 2*bit(2) + 4*bit(3)
+
+    nx = ckey_max(ilev_par)
+    offset = key_off(ilev_par)
+    key = offset + ix + iy*nx + iz*nx*nx
+
+    igridn = hash_get(hash_key, hash_val, hash_size, key)
+  end subroutine get_parent_cell_device
+
+  ! =========================================================================
+  ! Grow the test cell arrays to at least n
+  ! =========================================================================
+  subroutine phew_allocate_test(n)
+    integer, intent(in) :: n
+    integer :: nmax
+
+    if (allocated(phew_grid)) then
+       if (size(phew_grid) >= n) return
+       deallocate(phew_grid, phew_cell, phew_level, phew_dens)
+       deallocate(phew_grid0, phew_cell0, phew_level0, phew_dens0)
+       deallocate(phew_parent, phew_peak, phew_label, phew_nbor)
+       deallocate(phew_key_in, phew_key_out, phew_order_in, phew_order_out)
+    endif
+    nmax = n + n/2
+    allocate(phew_grid(nmax), phew_cell(nmax), phew_level(nmax), phew_dens(nmax))
+    allocate(phew_grid0(nmax), phew_cell0(nmax), phew_level0(nmax), phew_dens0(nmax))
+    allocate(phew_parent(nmax), phew_peak(nmax), phew_label(nmax), phew_nbor(nnbor, nmax))
+    allocate(phew_key_in(nmax), phew_key_out(nmax), phew_order_in(nmax), phew_order_out(nmax))
+  end subroutine phew_allocate_test
+
+  ! =========================================================================
+  ! Grow the peak arrays to at least n
+  ! =========================================================================
+  subroutine phew_allocate_peak(n)
+    integer, intent(in) :: n
+    integer :: nmax
+
+    if (allocated(phew_peak_test)) then
+       if (size(phew_peak_test) >= n) return
+       deallocate(phew_peak_test, phew_new_peak, phew_alive, phew_ncore, phew_n_cells)
+       deallocate(phew_begin, phew_end, phew_saddle_edge)
+       deallocate(phew_max_dens, phew_saddle_dens, phew_relevance)
+       deallocate(phew_peak_pos, phew_peak_vel, phew_peak_acc)
+       deallocate(phew_mass4, phew_kinetic, phew_thermal, phew_grav, phew_idot)
+       deallocate(phew_gas_com, phew_gas_vel, phew_inertia, phew_idot_tensor)
+       deallocate(phew_bound, phew_contracting)
+    endif
+    nmax = n + n/2
+    allocate(phew_peak_test(nmax), phew_new_peak(nmax), phew_alive(nmax), phew_ncore(nmax), phew_n_cells(nmax))
+    allocate(phew_begin(nmax), phew_end(nmax), phew_saddle_edge(nmax))
+    allocate(phew_max_dens(nmax), phew_saddle_dens(nmax), phew_relevance(nmax))
+    allocate(phew_peak_pos(ndim, nmax), phew_peak_vel(ndim, nmax), phew_peak_acc(ndim, nmax))
+    allocate(phew_mass4(nmax), phew_kinetic(nmax), phew_thermal(nmax))
+    allocate(phew_grav(nmax), phew_idot(nmax))
+    allocate(phew_gas_com(ndim, nmax), phew_gas_vel(ndim, nmax))
+    allocate(phew_inertia(ndim, ndim, nmax), phew_idot_tensor(ndim, ndim, nmax))
+    allocate(phew_bound(nmax), phew_contracting(nmax))
+  end subroutine phew_allocate_peak
+
+  ! =========================================================================
+  ! Host Driver: Allocate the work arrays at the start of a run
+  ! =========================================================================
+  subroutine gpu_allocate_phew(sim)
+    use ramses_commons, only: ramses_t
+    implicit none
+    type(ramses_t) :: sim
+
+    if (.not. allocated(phew_map)) then
+       allocate(phew_map(1:twotondim, 1:sim%m%ngridmax+sim%m%ncachemax))
+       allocate(phew_core_test(1:sim%r%ncoremax))
+       phew_map = 0
+    endif
+    call phew_allocate_test((sim%m%ngridmax + sim%m%ncachemax) / 10)
+    call phew_allocate_peak(sim%m%ngridmax / 10)
+  end subroutine gpu_allocate_phew
+
+  ! =========================================================================
+  ! CUDA Kernel: Sort key of the test cells (decreasing density)
+  ! =========================================================================
+  attributes(global) subroutine phew_sort_key_kernel(ntest)
+    integer, value :: ntest
+    integer :: itest
+
+    itest = threadIdx%x + (blockIdx%x - 1) * blockDim%x
+    if (itest > ntest) return
+    ! Positive densities sort as their bit patterns; the sign reverses the order
+    phew_key_in(itest) = -transfer(phew_dens0(itest), 0_8)
+    phew_order_in(itest) = itest
+  end subroutine phew_sort_key_kernel
+
+  ! =========================================================================
+  ! CUDA Kernel: Gather the test cells in sorted order
+  ! =========================================================================
+  attributes(global) subroutine phew_gather_test_kernel(ntest)
+    integer, value :: ntest
+    integer :: itest, jtest
+
+    itest = threadIdx%x + (blockIdx%x - 1) * blockDim%x
+    if (itest > ntest) return
+    jtest = phew_order_out(itest)
+    phew_grid(itest) = phew_grid0(jtest)
+    phew_cell(itest) = phew_cell0(jtest)
+    phew_level(itest) = phew_level0(jtest)
+    phew_dens(itest) = phew_dens0(jtest)
+  end subroutine phew_gather_test_kernel
+
+  ! =========================================================================
+  ! CUDA Kernel: Test index of each test cell in the mesh map
+  ! =========================================================================
+  attributes(global) subroutine phew_map_kernel(ntest)
+    integer, value :: ntest
+    integer :: itest
+
+    itest = threadIdx%x + (blockIdx%x - 1) * blockDim%x
+    if (itest > ntest) return
+    phew_map(phew_cell(itest), phew_grid(itest)) = itest
+  end subroutine phew_map_kernel
+
+  ! =========================================================================
+  ! CUDA Kernel: Number of test cells, in 64 bits, from the counts per oct
+  ! =========================================================================
+  attributes(global) subroutine phew_count_test_kernel(num_octs, ntest)
+    integer, value :: num_octs
+    integer(kind=8), device :: ntest
+    integer :: ioct
+    integer(kind=8) :: info
+
+    ioct = threadIdx%x + (blockIdx%x - 1) * blockDim%x
+    if (ioct > num_octs) return
+    if (prefix_sum(ioct) > 0) info = atomicadd(ntest, int(prefix_sum(ioct), 8))
+  end subroutine phew_count_test_kernel
+
+  ! =========================================================================
+  ! Host Driver: Collect the test cells above threshold, by decreasing density
+  ! =========================================================================
+  subroutine phew_collect_test(sim, ntest)
+    use ramses_commons, only: ramses_t
+    use cub_module, only: radix_sort
+    use iso_c_binding, only: c_loc
+    implicit none
+    type(ramses_t) :: sim
+    integer, intent(out) :: ntest
+
+    integer :: num_octs, nblock
+    integer(kind=8) :: ntest8
+    integer(kind=8), device :: ntest8_d
+    type(dim3) :: block_dim, grid_dim
+    real(kind=dp) :: threshold
+
+    ntest = 0
+    num_octs = sim%m%ifree - 1
+    if (num_octs <= 0) return
+    threshold = sim%c%density_threshold
+
+    ! Count per oct, scan over octs and scatter, as gpu_collect_test
+    block_dim = dim3(twotondim, 16, 1)
+    grid_dim = dim3((num_octs + 15) / 16, 1, 1)
+    call flag_test_cells_kernel<<<grid_dim, block_dim>>>(prefix_sum, rho, grid, threshold, 1, num_octs)
+
+    ! The CPU limit, on the 64-bit count before it is narrowed
+    ntest8_d = 0
+    call phew_count_test_kernel<<<(num_octs + 255) / 256, 256>>>(num_octs, ntest8_d)
+    ntest8 = ntest8_d
+    if (ntest8 > sim%m%ngridmax) then
+       write(*,*) 'Error: cells above the core clump threshold (', ntest8, ') exceed ngridmax (', sim%m%ngridmax, ')'
+       write(*,*) 'Increase the core clump density threshold'
+       stop
+    endif
+    ntest = int(ntest8, kind=4)
+    if (ntest == 0) return
+    call gpu_scan(prefix_sum, 1, num_octs)
+    call phew_allocate_test(ntest)
+    call scatter_test_cells_kernel<<<grid_dim, block_dim>>>(phew_grid0, phew_cell0, phew_level0, phew_dens0, &
+         & prefix_sum, rho, grid, threshold, 1, num_octs)
+
+    ! Stable sort by decreasing density: equal densities keep the collect order
+    nblock = (ntest + 255) / 256
+    call phew_sort_key_kernel<<<nblock, 256>>>(ntest)
+    call radix_sort(c_loc(phew_key_in), c_loc(phew_key_out), c_loc(phew_order_in), c_loc(phew_order_out), &
+         & 1, ntest, 0, 64)
+    call phew_gather_test_kernel<<<nblock, 256>>>(ntest)
+  end subroutine phew_collect_test
+
+  ! =========================================================================
+  ! CUDA Kernel: Densest neighbour, peak flag and neighbour list of test cells
+  ! =========================================================================
+  attributes(global) subroutine phew_neighbour_kernel(hash_key, hash_val, hash_size, ntest, ngridmax)
+    integer(kind=8), device :: hash_key(*)
+    integer(kind=4), device :: hash_val(*)
+    integer, value :: hash_size, ntest, ngridmax
+
+    integer :: itest, lane, cblk, offset, idim
+    integer :: ilevel, igrid, ind, igridn, icelln, jtest
+    real(kind=dp) :: xcen(3), xnei(3), density_max, dens_cand
+    integer(kind=8) :: hash_nbor(0:3)
+    logical :: inside
+
+    ! Per-cell argmax: 56 lanes padded to 64 slots, 4 cells per block
+    real(kind=dp), shared :: s_dens(0:63, 0:ncell_block-1)
+    integer, shared :: s_lane(0:63, 0:ncell_block-1), s_test(0:63, 0:ncell_block-1)
+
+    ! One thread per neighbour, as collect_peak_kernel
+    cblk = (threadIdx%x - 1) / nnbor
+    lane = mod(threadIdx%x - 1, nnbor)
+    itest = (blockIdx%x - 1) * ncell_block + cblk + 1
+
+    jtest = 0
+    dens_cand = -huge(0.0_dp)
+
+    if (itest <= ntest) then
+       ilevel = phew_level(itest)
+       igrid = phew_grid(itest)
+       ind = phew_cell(itest)
+
+       xcen(1) = 2*grid(igrid)%ckey(1) + MOD((ind-1),   2) + 0.5d0
+       xcen(2) = 2*grid(igrid)%ckey(2) + MOD((ind-1)/2, 2) + 0.5d0
+       xcen(3) = 2*grid(igrid)%ckey(3) + MOD((ind-1)/4, 2) + 0.5d0
+
+       ! Same default real factor as the CPU finder
+       density_max = 1.0001 * rho(ind, igrid)
+
+       xnei(1:3) = xcen(1:3) + xnbor_const(1:3, lane+1)
+
+       ! Periodic boundary conditions; neighbours outside a non-periodic box are skipped
+       inside = .true.
+       do idim = 1, 3
+          if (periodic(idim)) then
+             if (xnei(idim) < box_ckey_min(idim, ilevel+1)) then
+                xnei(idim) = xnei(idim) - box_ckey_min(idim, ilevel+1) + box_ckey_max(idim, ilevel+1)
+             endif
+             if (xnei(idim) >= box_ckey_max(idim, ilevel+1)) then
+                xnei(idim) = xnei(idim) + box_ckey_min(idim, ilevel+1) - box_ckey_max(idim, ilevel+1)
+             endif
+          else
+             inside = inside .and. xnei(idim) >= box_ckey_min(idim, ilevel+1) .and. &
+                  & xnei(idim) < box_ckey_max(idim, ilevel+1)
+          endif
+       end do
+
+       if (inside) then
+          ! Neighbouring cell at ilevel, at ilevel-1 if missing, at ilevel+1 if refined
+          hash_nbor(0) = ilevel + 1
+          hash_nbor(1:3) = int(xnei(1:3))
+          call get_parent_cell_device(hash_nbor, igridn, icelln, hash_key, hash_val, hash_size)
+          if (igridn <= 0 .or. igridn > ngridmax) then
+             hash_nbor(0) = ilevel
+             hash_nbor(1:3) = int(xnei(1:3)/2.0d0)
+             call get_parent_cell_device(hash_nbor, igridn, icelln, hash_key, hash_val, hash_size)
+          else if (grid(igridn)%refined(icelln)) then
+             hash_nbor(0) = ilevel + 2
+             hash_nbor(1:3) = int(xnei(1:3)*2.0d0)
+             call get_parent_cell_device(hash_nbor, igridn, icelln, hash_key, hash_val, hash_size)
+          endif
+          if (igridn > 0 .and. igridn <= ngridmax) then
+             jtest = phew_map(icelln, igridn)
+             if (rho(icelln, igridn) > density_max) dens_cand = rho(icelln, igridn)
+          endif
+       endif
+       phew_nbor(lane+1, itest) = jtest
+    endif
+
+    s_dens(lane, cblk) = dens_cand
+    s_lane(lane, cblk) = lane
+    s_test(lane, cblk) = jtest
+    if (lane < 64 - nnbor) then ! pad slots 56-63
+       s_dens(lane+nnbor, cblk) = -huge(0.0_dp)
+       s_lane(lane+nnbor, cblk) = 64
+       s_test(lane+nnbor, cblk) = 0
+    endif
+    call syncthreads()
+
+    ! Tree argmax over the 64 slots (ties: lowest lane, as in the CPU scan order)
+    offset = 32
+    do while (offset >= 1)
+       if (lane < offset) then
+          if (s_dens(lane+offset, cblk) > s_dens(lane, cblk) .or. &
+              (s_dens(lane+offset, cblk) == s_dens(lane, cblk) .and. &
+               s_lane(lane+offset, cblk) < s_lane(lane, cblk))) then
+             s_dens(lane, cblk) = s_dens(lane+offset, cblk)
+             s_lane(lane, cblk) = s_lane(lane+offset, cblk)
+             s_test(lane, cblk) = s_test(lane+offset, cblk)
+          endif
+       endif
+       call syncthreads()
+       offset = offset / 2
+    end do
+
+    if (lane == 0 .and. itest <= ntest) then
+       if (s_dens(0, cblk) > -huge(0.0_dp)) then
+          ! Some neighbour is denser: not a peak (parent 0 if not a test cell)
+          phew_parent(itest) = s_test(0, cblk)
+          phew_peak(itest) = 0
+       else
+          phew_parent(itest) = itest
+          phew_peak(itest) = 1
+       endif
+    endif
+  end subroutine phew_neighbour_kernel
+
+  ! =========================================================================
+  ! Host Driver: Densest neighbours and density peaks
+  ! =========================================================================
+  subroutine phew_collect_peak(sim, ntest, npeak)
+    use ramses_commons, only: ramses_t
+    implicit none
+    type(ramses_t) :: sim
+    integer, intent(in) :: ntest
+    integer, intent(out) :: npeak
+
+    integer :: nblock
+    integer, device :: npeak_d
+
+    ! Test index of each test cell in the mesh map
+    phew_map(:, 1:sim%m%ifree-1) = 0
+    nblock = (ntest + 255) / 256
+    call phew_map_kernel<<<nblock, 256>>>(ntest)
+
+    ! 56 threads per test cell, so block size 224 (4 cells per block)
+    call phew_neighbour_kernel<<<(ntest + ncell_block - 1) / ncell_block, nnbor*ncell_block>>>( &
+         & hash_key, hash_val, sim%m%hash_size, ntest, sim%m%ngridmax)
+
+    ! Number the peaks in test order, i.e. by decreasing density
+    call gpu_scan(phew_peak, 1, ntest, npeak_d)
+    npeak = npeak_d
+  end subroutine phew_collect_peak
+
+  ! =========================================================================
+  ! CUDA Kernel: Peak patch label of each test cell, and test cell of each peak
+  ! =========================================================================
+  attributes(global) subroutine phew_label_kernel(ntest)
+    integer, value :: ntest
+    integer :: itest, iroot, ipeak
+
+    itest = threadIdx%x + (blockIdx%x - 1) * blockDim%x
+    if (itest > ntest) return
+    iroot = phew_parent(itest)
+    if (iroot == 0) then
+       phew_label(itest) = 0
+       return
+    endif
+    ipeak = phew_peak(iroot)
+    phew_label(itest) = ipeak
+    if (iroot == itest) then
+       phew_peak_test(ipeak) = itest
+       phew_max_dens(ipeak) = phew_dens(itest)
+       phew_new_peak(ipeak) = ipeak
+       phew_alive(ipeak) = 1
+    endif
+  end subroutine phew_label_kernel
+
+  ! =========================================================================
+  ! Host Driver: Watershed segmentation into peak patches
+  ! =========================================================================
+  subroutine phew_collect_patch(ntest)
+    integer, intent(in) :: ntest
+    integer :: nblock, nmove_h
+    integer, device :: nmove_d
+
+    ! Follow each ascent to its peak by pointer jumping, as gpu_collect_patch
+    nblock = (ntest + 255) / 256
+    nmove_h = 1
+    do while (nmove_h > 0)
+       nmove_d = 0
+       call pointer_jump_kernel<<<nblock, 256>>>(phew_parent, nmove_d, ntest)
+       nmove_h = nmove_d
+    end do
+    call phew_label_kernel<<<nblock, 256>>>(ntest)
+  end subroutine phew_collect_patch
+
+  ! =========================================================================
+  ! CUDA Kernel: Reset the saddle density and saddle edge of each peak
+  ! =========================================================================
+  attributes(global) subroutine phew_init_saddle_kernel(threshold, npeak)
+    real(kind=dp), value :: threshold
+    integer, value :: npeak
+    integer :: ipeak
+
+    ipeak = threadIdx%x + (blockIdx%x - 1) * blockDim%x
+    if (ipeak > npeak) return
+    phew_saddle_dens(ipeak) = threshold
+    phew_saddle_edge(ipeak) = huge(0_8)
+  end subroutine phew_init_saddle_kernel
+
+  ! =========================================================================
+  ! CUDA Kernel: Densest saddle point of each peak patch
+  ! Pass 1 takes the largest saddle density, pass 2 the first edge
+  ! (test cell, then neighbour) that reaches it, as the CPU loop does.
+  ! Written by Daniel Han (mini-ramses version October 2026).
+  ! =========================================================================
+  attributes(global) subroutine phew_saddle_kernel(threshold, ntest, npass)
+    real(kind=dp), value :: threshold
+    integer, value :: ntest, npass
+    integer :: itest, jtest, ipeak, jpeak, lane, cblk, offset
+    integer(kind=8) :: edge, edge_old
+    real(kind=dp) :: dens_ave, dens_old
+
+    ! Per-cell max and min: 56 lanes padded to 64 slots, 4 cells per block
+    real(kind=dp), shared :: s_dens(0:63, 0:ncell_block-1)
+    integer(kind=8), shared :: s_edge(0:63, 0:ncell_block-1)
+
+    ! One thread per neighbour, as in the neighbour kernel
+    cblk = (threadIdx%x - 1) / nnbor
+    lane = mod(threadIdx%x - 1, nnbor)
+    itest = (blockIdx%x - 1) * ncell_block + cblk + 1
+
+    ipeak = 0
+    dens_ave = threshold
+    edge = huge(0_8)
+    if (itest <= ntest) then
+       ipeak = phew_label(itest)
+       jtest = phew_nbor(lane+1, itest)
+       if (ipeak > 0 .and. jtest > 0) then
+          jpeak = phew_label(jtest)
+          if (jpeak > 0 .and. jpeak /= ipeak) then
+             dens_ave = 0.5d0 * (phew_dens(itest) + phew_dens(jtest))
+             if (dens_ave <= threshold) then
+                dens_ave = threshold
+             else if (npass == 2 .and. dens_ave == phew_saddle_dens(ipeak)) then
+                edge = int(itest - 1, 8) * nnbor + lane
+             endif
+          endif
+       endif
+    endif
+
+    s_dens(lane, cblk) = dens_ave
+    s_edge(lane, cblk) = edge
+    if (lane < 64 - nnbor) then ! pad slots 56-63
+       s_dens(lane+nnbor, cblk) = threshold
+       s_edge(lane+nnbor, cblk) = huge(0_8)
+    endif
+    call syncthreads()
+
+    ! Tree max of the saddle densities and min of the saddle edges over the 64 slots
+    offset = 32
+    do while (offset >= 1)
+       if (lane < offset) then
+          s_dens(lane, cblk) = max(s_dens(lane, cblk), s_dens(lane+offset, cblk))
+          s_edge(lane, cblk) = min(s_edge(lane, cblk), s_edge(lane+offset, cblk))
+       endif
+       call syncthreads()
+       offset = offset / 2
+    end do
+
+    if (lane == 0 .and. ipeak > 0) then
+       if (npass == 1 .and. s_dens(0, cblk) > threshold) then
+          dens_old = atomicmax(phew_saddle_dens(ipeak), s_dens(0, cblk))
+       else if (npass == 2 .and. s_edge(0, cblk) < huge(0_8)) then
+          edge_old = atomicmin(phew_saddle_edge(ipeak), s_edge(0, cblk))
+       endif
+    endif
+  end subroutine phew_saddle_kernel
+
+  ! =========================================================================
+  ! Host Driver: Densest saddle point and saddle neighbour of each peak patch
+  ! =========================================================================
+  subroutine phew_collect_saddle(threshold, ntest, npeak)
+    real(kind=dp), intent(in) :: threshold
+    integer, intent(in) :: ntest, npeak
+
+    call phew_init_saddle_kernel<<<(npeak + 255) / 256, 256>>>(threshold, npeak)
+    ! 56 threads per test cell, so block size 224 (4 cells per block)
+    call phew_saddle_kernel<<<(ntest + ncell_block - 1) / ncell_block, nnbor*ncell_block>>>(threshold, ntest, 1)
+    call phew_saddle_kernel<<<(ntest + ncell_block - 1) / ncell_block, nnbor*ncell_block>>>(threshold, ntest, 2)
+  end subroutine phew_collect_saddle
+
+  ! =========================================================================
+  ! CUDA Kernel: Merge each irrelevant peak into its denser saddle neighbour
+  ! Written by Daniel Han (mini-ramses version October 2026).
+  ! =========================================================================
+  attributes(global) subroutine phew_merge_kernel(relevance_threshold, npeak, nmerge)
+    real(kind=dp), value :: relevance_threshold
+    integer, value :: npeak
+    integer, device :: nmerge
+    integer :: ipeak, jpeak, itest, j, info
+
+    ipeak = threadIdx%x + (blockIdx%x - 1) * blockDim%x
+    if (ipeak > npeak) return
+    if (phew_alive(ipeak) == 0) return
+    if (phew_saddle_edge(ipeak) == huge(0_8)) return
+    if (phew_max_dens(ipeak) / phew_saddle_dens(ipeak) >= relevance_threshold) return
+
+    ! Saddle neighbour from the saddle edge
+    itest = int(phew_saddle_edge(ipeak) / nnbor) + 1
+    j = int(mod(phew_saddle_edge(ipeak), int(nnbor, 8))) + 1
+    jpeak = phew_label(phew_nbor(j, itest))
+
+    ! Merge into a denser neighbour, or into the lower index of two equal peaks
+    if (phew_max_dens(jpeak) > phew_max_dens(ipeak) .or. &
+        (phew_max_dens(jpeak) == phew_max_dens(ipeak) .and. jpeak < ipeak)) then
+       phew_new_peak(ipeak) = jpeak
+       phew_alive(ipeak) = 0
+       info = atomicadd(nmerge, 1)
+    endif
+  end subroutine phew_merge_kernel
+
+  ! =========================================================================
+  ! CUDA Kernel: Relabel the test cells with their surviving peak
+  ! =========================================================================
+  attributes(global) subroutine phew_relabel_kernel(ntest)
+    integer, value :: ntest
+    integer :: itest
+
+    itest = threadIdx%x + (blockIdx%x - 1) * blockDim%x
+    if (itest > ntest) return
+    if (phew_label(itest) > 0) phew_label(itest) = phew_new_peak(phew_label(itest))
+  end subroutine phew_relabel_kernel
+
+  ! =========================================================================
+  ! CUDA Kernel: Relevance of the surviving peaks
+  ! =========================================================================
+  attributes(global) subroutine phew_relevance_kernel(npeak, nalive)
+    integer, value :: npeak
+    integer, device :: nalive
+    integer :: ipeak, info
+
+    ipeak = threadIdx%x + (blockIdx%x - 1) * blockDim%x
+    if (ipeak > npeak) return
+    if (phew_alive(ipeak) > 0) then
+       phew_relevance(ipeak) = phew_max_dens(ipeak) / phew_saddle_dens(ipeak)
+       info = atomicadd(nalive, 1)
+    else
+       phew_relevance(ipeak) = 0.0d0
+    endif
+  end subroutine phew_relevance_kernel
+
+  ! =========================================================================
+  ! Host Driver: Merge irrelevant peak patches (the CPU merge_clumps)
+  ! =========================================================================
+  subroutine phew_merge_clumps(sim, ntest, npeak)
+    use ramses_commons, only: ramses_t
+    implicit none
+    type(ramses_t) :: sim
+    integer, intent(in) :: ntest, npeak
+
+    integer :: nmerge_h, nmove_h, nalive_h
+    integer, device :: nmerge_d, nmove_d, nalive_d
+    real(kind=dp) :: threshold
+
+    threshold = sim%c%density_threshold
+    call phew_collect_saddle(threshold, ntest, npeak)
+    do
+       nmerge_d = 0
+       call phew_merge_kernel<<<(npeak + 255) / 256, 256>>>(real(sim%c%relevance_threshold, kind=dp), &
+            & npeak, nmerge_d)
+       nmerge_h = nmerge_d
+       if (nmerge_h == 0) exit
+
+       ! Follow the merger chains to the surviving peaks
+       nmove_h = 1
+       do while (nmove_h > 0)
+          nmove_d = 0
+          call pointer_jump_kernel<<<(npeak + 255) / 256, 256>>>(phew_new_peak, nmove_d, npeak)
+          nmove_h = nmove_d
+       end do
+
+       ! New peak patches and their saddle points
+       call phew_relabel_kernel<<<(ntest + 255) / 256, 256>>>(ntest)
+       call phew_collect_saddle(threshold, ntest, npeak)
+    end do
+
+    nalive_d = 0
+    call phew_relevance_kernel<<<(npeak + 255) / 256, 256>>>(npeak, nalive_d)
+    nalive_h = nalive_d
+    if (sim%g%myid == 1) write(*,'(" Found",I12,"  relevant peaks")') nalive_h
+  end subroutine phew_merge_clumps
+
+  ! =========================================================================
+  ! CUDA Kernel: Position, velocity and acceleration of each peak cell
+  ! =========================================================================
+  attributes(global) subroutine phew_peak_kernel(boxlen, npeak)
+    real(kind=dp), value :: boxlen
+    integer, value :: npeak
+    integer :: ipeak, itest, igrid, ind, ilevel
+    real(kind=dp) :: dx_loc
+
+    ipeak = threadIdx%x + (blockIdx%x - 1) * blockDim%x
+    if (ipeak > npeak) return
+    itest = phew_peak_test(ipeak)
+    igrid = phew_grid(itest)
+    ind = phew_cell(itest)
+    ilevel = phew_level(itest)
+    dx_loc = boxlen / 2**ilevel
+    phew_peak_pos(1, ipeak) = (2*grid(igrid)%ckey(1) + MOD((ind-1),   2) + 0.5d0) * dx_loc - d_skip(1)
+    phew_peak_pos(2, ipeak) = (2*grid(igrid)%ckey(2) + MOD((ind-1)/2, 2) + 0.5d0) * dx_loc - d_skip(2)
+    phew_peak_pos(3, ipeak) = (2*grid(igrid)%ckey(3) + MOD((ind-1)/4, 2) + 0.5d0) * dx_loc - d_skip(3)
+    phew_peak_vel(1:3, ipeak) = uold(ind, 2:4, igrid) / uold(ind, 1, igrid)
+    phew_peak_acc(1:3, ipeak) = f(ind, 1:3, igrid)
+  end subroutine phew_peak_kernel
+
+  ! =========================================================================
+  ! CUDA Kernel: Sort key of the test cells (peak patch label)
+  ! =========================================================================
+  attributes(global) subroutine phew_label_key_kernel(ntest)
+    integer, value :: ntest
+    integer :: itest
+
+    itest = threadIdx%x + (blockIdx%x - 1) * blockDim%x
+    if (itest > ntest) return
+    phew_key_in(itest) = phew_label(itest)
+    phew_order_in(itest) = itest
+  end subroutine phew_label_key_kernel
+
+  ! =========================================================================
+  ! CUDA Kernel: First and last sorted test cell of each peak patch
+  ! =========================================================================
+  attributes(global) subroutine phew_segment_kernel(ntest)
+    integer, value :: ntest
+    integer :: k, ipeak
+
+    k = threadIdx%x + (blockIdx%x - 1) * blockDim%x
+    if (k > ntest) return
+    ipeak = int(phew_key_out(k))
+    if (ipeak == 0) return
+    if (k == 1) then
+       phew_begin(ipeak) = k
+    else if (phew_key_out(k-1) /= ipeak) then
+       phew_begin(ipeak) = k
+    endif
+    if (k == ntest) then
+       phew_end(ipeak) = k
+    else if (phew_key_out(k+1) /= ipeak) then
+       phew_end(ipeak) = k
+    endif
+  end subroutine phew_segment_kernel
+
+  ! =========================================================================
+  ! Device Function: Centre of a test cell, in the periodic image closest to xpeak
+  ! =========================================================================
+  attributes(device) subroutine phew_cell_position(itest, boxlen, xpeak, xcell, dx_loc)
+    integer, value :: itest
+    real(kind=dp), value :: boxlen
+    real(kind=dp) :: xpeak(3), xcell(3), dx_loc
+    integer :: igrid, ind, idim
+
+    igrid = phew_grid(itest)
+    ind = phew_cell(itest)
+    dx_loc = boxlen / 2**phew_level(itest)
+    xcell(1) = (2*grid(igrid)%ckey(1) + MOD((ind-1),   2) + 0.5d0) * dx_loc - d_skip(1)
+    xcell(2) = (2*grid(igrid)%ckey(2) + MOD((ind-1)/2, 2) + 0.5d0) * dx_loc - d_skip(2)
+    xcell(3) = (2*grid(igrid)%ckey(3) + MOD((ind-1)/4, 2) + 0.5d0) * dx_loc - d_skip(3)
+    do idim = 1, 3
+       if (periodic(idim)) then
+          if (xcell(idim) - xpeak(idim) >  box_size(idim)*0.5) xcell(idim) = xcell(idim) - box_size(idim)
+          if (xcell(idim) - xpeak(idim) < -box_size(idim)*0.5) xcell(idim) = xcell(idim) + box_size(idim)
+       endif
+    end do
+  end subroutine phew_cell_position
+
+  ! =========================================================================
+  ! CUDA Kernel: Gas mass, centre of mass and velocity of each peak patch
+  ! One block per peak, fixed reduction order.
+  ! Written by Daniel Han (mini-ramses version October 2026).
+  ! =========================================================================
+  attributes(global) subroutine phew_gas_mass_kernel(boxlen, smallr)
+    real(kind=dp), value :: boxlen, smallr
+    integer, parameter :: nfield = 7
+    real(kind=dp), shared :: s_sum(nprop, nfield)
+    integer :: ipeak, tid, k, itest, igrid, ind, ifield, offset
+    real(kind=dp) :: dx_loc, vol, d, xcell(3), vel(3), acc(nfield)
+
+    ipeak = blockIdx%x
+    tid = threadIdx%x
+
+    acc = 0.0d0
+    do k = phew_begin(ipeak) + tid - 1, phew_end(ipeak), nprop
+       itest = phew_order_out(k)
+       igrid = phew_grid(itest)
+       ind = phew_cell(itest)
+       call phew_cell_position(itest, boxlen, phew_peak_pos(1:3, ipeak), xcell, dx_loc)
+       vol = dx_loc**3
+       d = max(uold(ind, 1, igrid), smallr)
+       vel(1:3) = uold(ind, 2:4, igrid) / d
+       acc(1) = acc(1) + d*vol
+       acc(2:4) = acc(2:4) + d*vol*xcell(1:3)
+       acc(5:7) = acc(5:7) + d*vol*vel(1:3)
+    end do
+    s_sum(tid, 1:nfield) = acc(1:nfield)
+    call syncthreads()
+
+    offset = nprop / 2
+    do while (offset >= 1)
+       if (tid <= offset) then
+          do ifield = 1, nfield
+             s_sum(tid, ifield) = s_sum(tid, ifield) + s_sum(tid+offset, ifield)
+          end do
+       endif
+       call syncthreads()
+       offset = offset / 2
+    end do
+
+    if (tid == 1) then
+       phew_n_cells(ipeak) = phew_end(ipeak) - phew_begin(ipeak) + 1
+       phew_gas_com(1:3, ipeak) = s_sum(1, 2:4)
+       phew_gas_vel(1:3, ipeak) = s_sum(1, 5:7)
+       if (s_sum(1, 1) > 0.0d0) then
+          phew_gas_com(1:3, ipeak) = s_sum(1, 2:4) / s_sum(1, 1)
+          phew_gas_vel(1:3, ipeak) = s_sum(1, 5:7) / s_sum(1, 1)
+       endif
+    endif
+  end subroutine phew_gas_mass_kernel
+
+  ! =========================================================================
+  ! CUDA Kernel: Virial terms, dI/dt and inertia tensors of each peak patch
+  ! One block per peak, fixed reduction order.
+  ! Written by Daniel Han (mini-ramses version October 2026).
+  ! =========================================================================
+  attributes(global) subroutine phew_virial_kernel(boxlen, smallr, gamma, dx_min)
+    real(kind=dp), value :: boxlen, smallr, gamma, dx_min
+    integer, parameter :: nfield = 17
+    real(kind=dp), shared :: s_sum(nprop, nfield)
+    integer :: ipeak, tid, k, itest, igrid, ind, idim, jdim, ifield, offset
+    real(kind=dp) :: dx_loc, vol, d, etot, ekin, pres
+    real(kind=dp) :: xcell(3), vel(3), rrel(3), vrel(3), acc(nfield)
+
+    ipeak = blockIdx%x
+    tid = threadIdx%x
+
+    acc = 0.0d0
+    do k = phew_begin(ipeak) + tid - 1, phew_end(ipeak), nprop
+       itest = phew_order_out(k)
+       igrid = phew_grid(itest)
+       ind = phew_cell(itest)
+       call phew_cell_position(itest, boxlen, phew_peak_pos(1:3, ipeak), xcell, dx_loc)
+       vol = dx_loc**3
+       d = max(uold(ind, 1, igrid), smallr)
+       vel(1:3) = uold(ind, 2:4, igrid) / d
+       etot = uold(ind, 5, igrid)
+       ekin = 0.0d0
+       do idim = 1, 3
+          ekin = ekin + 0.5d0*d*vel(idim)**2
+       end do
+       pres = (etot - ekin) * (gamma - 1.0d0)
+       rrel(1:3) = xcell(1:3) - phew_gas_com(1:3, ipeak)
+       vrel(1:3) = vel(1:3) - phew_gas_vel(1:3, ipeak)
+       if (sum((xcell(1:3) - phew_peak_pos(1:3, ipeak))**2) <= (4.0d0*dx_min)**2) then
+          acc(1) = acc(1) + d*vol
+       endif
+       acc(2) = acc(2) + sum(vrel(1:3)**2)*vol*d
+       acc(3) = acc(3) + 3.0d0*vol*pres
+       acc(4) = acc(4) + 2.0d0*sum(rrel(1:3)*vrel(1:3))*vol*d
+       acc(5) = acc(5) + sum(f(ind, 1:3, igrid)*rrel(1:3))*vol*d
+       ifield = 5
+       do idim = 1, 3
+          do jdim = idim, 3
+             ifield = ifield + 1
+             acc(ifield) = acc(ifield) + rrel(idim)*rrel(jdim)*vol*d
+             acc(ifield+6) = acc(ifield+6) + (vrel(jdim)*rrel(idim) + vrel(idim)*rrel(jdim))*vol*d
+          end do
+       end do
+    end do
+    s_sum(tid, 1:nfield) = acc(1:nfield)
+    call syncthreads()
+
+    offset = nprop / 2
+    do while (offset >= 1)
+       if (tid <= offset) then
+          do ifield = 1, nfield
+             s_sum(tid, ifield) = s_sum(tid, ifield) + s_sum(tid+offset, ifield)
+          end do
+       endif
+       call syncthreads()
+       offset = offset / 2
+    end do
+
+    if (tid == 1) then
+       phew_mass4(ipeak) = s_sum(1, 1)
+       phew_kinetic(ipeak) = s_sum(1, 2)
+       phew_thermal(ipeak) = s_sum(1, 3)
+       phew_idot(ipeak) = s_sum(1, 4)
+       phew_grav(ipeak) = s_sum(1, 5)
+       ifield = 5
+       do idim = 1, 3
+          do jdim = idim, 3
+             ifield = ifield + 1
+             phew_inertia(idim, jdim, ipeak) = s_sum(1, ifield)
+             phew_inertia(jdim, idim, ipeak) = s_sum(1, ifield)
+             phew_idot_tensor(idim, jdim, ipeak) = s_sum(1, ifield+6)
+             phew_idot_tensor(jdim, idim, ipeak) = s_sum(1, ifield+6)
+          end do
+       end do
+    endif
+  end subroutine phew_virial_kernel
+
+  ! =========================================================================
+  ! Device Function: Eigenvectors of a symmetric 3x3 matrix (Jacobi rotations)
+  ! =========================================================================
+  attributes(device) subroutine phew_jacobi_sym3(a, v)
+    real(kind=dp) :: a(3,3), v(3,3)
+    integer :: iter, pidx, qidx, j
+    real(kind=dp) :: app, aqq, apq, tau, t, c, s, tmp, offmax
+
+    v = 0.0d0
+    do j = 1, 3
+       v(j,j) = 1.0d0
+    end do
+    do iter = 1, 50
+       pidx = 1; qidx = 2; offmax = abs(a(1,2))
+       if (abs(a(1,3)) > offmax) then
+          pidx = 1; qidx = 3; offmax = abs(a(1,3))
+       endif
+       if (abs(a(2,3)) > offmax) then
+          pidx = 2; qidx = 3; offmax = abs(a(2,3))
+       endif
+       if (offmax == 0.0d0) exit
+       app = a(pidx,pidx); aqq = a(qidx,qidx); apq = a(pidx,qidx)
+       tau = (aqq - app) / (2.0d0*apq)
+       if (tau >= 0.0d0) then
+          t = 1.0d0 / (tau + sqrt(1.0d0 + tau*tau))
+       else
+          t = -1.0d0 / (-tau + sqrt(1.0d0 + tau*tau))
+       endif
+       c = 1.0d0 / sqrt(1.0d0 + t*t); s = t*c
+       do j = 1, 3
+          if (j /= pidx .and. j /= qidx) then
+             tmp = a(j,pidx)
+             a(j,pidx) = c*tmp - s*a(j,qidx)
+             a(pidx,j) = a(j,pidx)
+             a(j,qidx) = s*tmp + c*a(j,qidx)
+             a(qidx,j) = a(j,qidx)
+          endif
+       end do
+       a(pidx,pidx) = c*c*app - 2.0d0*s*c*apq + s*s*aqq
+       a(qidx,qidx) = s*s*app + 2.0d0*s*c*apq + c*c*aqq
+       a(pidx,qidx) = 0.0d0; a(qidx,pidx) = 0.0d0
+       do j = 1, 3
+          tmp = v(j,pidx)
+          v(j,pidx) = c*tmp - s*v(j,qidx)
+          v(j,qidx) = s*tmp + c*v(j,qidx)
+       end do
+    end do
+  end subroutine phew_jacobi_sym3
+
+  ! =========================================================================
+  ! CUDA Kernel: Bound and contracting flags of each peak patch
+  ! Written by Daniel Han (mini-ramses version October 2026).
+  ! =========================================================================
+  attributes(global) subroutine phew_criteria_kernel(all_axes, npeak)
+    logical, value :: all_axes
+    integer, value :: npeak
+    integer :: ipeak, iaxis, idim, jdim
+    real(kind=dp) :: inertia_mat(3,3), eigvec(3,3), axis_rate
+    logical :: contracting
+
+    ipeak = threadIdx%x + (blockIdx%x - 1) * blockDim%x
+    if (ipeak > npeak) return
+
+    ! Bound if kinetic and thermal terms are each below abs(W)
+    phew_bound(ipeak) = 0
+    if (phew_grav(ipeak) < 0.0d0) then
+       if (phew_kinetic(ipeak) < abs(phew_grav(ipeak)) .and. &
+           phew_thermal(ipeak) < abs(phew_grav(ipeak))) phew_bound(ipeak) = 1
+    endif
+
+    if (all_axes) then
+       ! Contracting along the three principal axes of the inertia tensor
+       inertia_mat(1:3,1:3) = phew_inertia(1:3, 1:3, ipeak)
+       call phew_jacobi_sym3(inertia_mat, eigvec)
+       contracting = phew_n_cells(ipeak) > 1
+       do iaxis = 1, 3
+          axis_rate = 0.0d0
+          do idim = 1, 3
+             do jdim = 1, 3
+                axis_rate = axis_rate + phew_idot_tensor(idim, jdim, ipeak)*eigvec(idim,iaxis)*eigvec(jdim,iaxis)
+             end do
+          end do
+          contracting = contracting .and. axis_rate < 0.0d0
+       end do
+    else
+       contracting = phew_idot(ipeak) < 0.0d0
+    endif
+    phew_contracting(ipeak) = merge(1, 0, contracting)
+  end subroutine phew_criteria_kernel
+
+  ! =========================================================================
+  ! Host Driver: Peak properties and the core criteria of each peak patch
+  ! =========================================================================
+  subroutine phew_clump_properties(sim, ntest, npeak)
+    use ramses_commons, only: ramses_t
+    use cub_module, only: radix_sort
+    use iso_c_binding, only: c_loc
+    implicit none
+    type(ramses_t) :: sim
+    integer, intent(in) :: ntest, npeak
+
+    real(kind=dp) :: boxlen, smallr, gamma, dx_min
+
+    boxlen = sim%r%boxlen
+    smallr = sim%r%smallr
+    gamma = sim%r%gamma
+    dx_min = sim%r%boxlen / 2d0**sim%r%nlevelmax
+
+    ! Peak cell position, velocity and acceleration
+    call phew_peak_kernel<<<(npeak + 255) / 256, 256>>>(boxlen, npeak)
+    if (.not. (sim%r%core_use_clump_prop_criteria .or. sim%r%core_use_contracting_all_axes)) return
+
+    ! Test cells of each peak patch, by test index
+    call phew_label_key_kernel<<<(ntest + 255) / 256, 256>>>(ntest)
+    call radix_sort(c_loc(phew_key_in), c_loc(phew_key_out), c_loc(phew_order_in), c_loc(phew_order_out), &
+         & 1, ntest, 0, 32)
+    phew_begin(1:npeak) = 1
+    phew_end(1:npeak) = 0
+    call phew_segment_kernel<<<(ntest + 255) / 256, 256>>>(ntest)
+
+    ! Gas mass and centre of mass, then the virial terms about it
+    call phew_gas_mass_kernel<<<npeak, nprop>>>(boxlen, smallr)
+    call phew_virial_kernel<<<npeak, nprop>>>(boxlen, smallr, gamma, dx_min)
+    call phew_criteria_kernel<<<(npeak + 255) / 256, 256>>>(sim%r%core_use_contracting_all_axes, npeak)
+  end subroutine phew_clump_properties
+
+  ! =========================================================================
+  ! CUDA Kernel: Count the cores in each peak patch
+  ! =========================================================================
+  attributes(global) subroutine phew_ncore_kernel(ncore)
+    integer, value :: ncore
+    integer :: icore, itest, ipeak, info
+
+    icore = threadIdx%x + (blockIdx%x - 1) * blockDim%x
+    if (icore > ncore) return
+    if (core_mp(icore) <= 0.0d0) return
+    itest = phew_core_test(icore)
+    if (itest == 0) return
+    ipeak = phew_label(itest)
+    if (ipeak > 0) info = atomicadd(phew_ncore(ipeak), 1)
+  end subroutine phew_ncore_kernel
+
+  ! =========================================================================
+  ! Host Driver: Count the existing cores in each peak
+  ! =========================================================================
+  subroutine phew_count_cores(sim, npeak)
+    use ramses_commons, only: ramses_t
+    implicit none
+    type(ramses_t) :: sim
+    integer, intent(in) :: npeak
+
+    phew_ncore(1:npeak) = 0
+    if (sim%core%npart == 0) return
+    ! Test cell of each core, level by level, as particle_peak_id
+    call launch_particle_id(sim, sim%core, core_xp, phew_core_test, phew_map, int(sim%r%ncoremax, kind=8))
+    call phew_ncore_kernel<<<(sim%core%npart + 255) / 256, 256>>>(sim%core%npart)
+  end subroutine phew_count_cores
+
+  ! =========================================================================
+  ! Host Driver: Core clump finder on the GPU (the CPU core_clump)
+  ! =========================================================================
+  subroutine gpu_core_clump(sim, threshold)
+    use ramses_commons, only: ramses_t
+    implicit none
+    type(ramses_t) :: sim
+    real(kind=8), intent(in) :: threshold
+
+    integer :: ntest, npeak
+
+    ! 1. Load clump finder parameters
+    sim%c%relevance_threshold = sim%r%core_relevance_threshold
+    sim%c%density_threshold   = threshold
+    sim%c%saddle_threshold    = sim%r%core_saddle_threshold
+    sim%c%mass_threshold      = sim%r%core_mass_threshold
+    sim%c%fraction_threshold  = sim%r%core_fraction_threshold
+    sim%c%ntest = 0
+    sim%c%ntest_tot = 0
+    sim%c%npeak = 0
+    sim%c%npeak_tot = 0
+
+    if (.not. allocated(phew_map)) then
+       allocate(phew_map(1:twotondim, 1:sim%m%ngridmax+sim%m%ncachemax))
+       allocate(phew_core_test(1:sim%r%ncoremax))
+       phew_map = 0
+    endif
+
+    ! 2. Smooth density field (the unsmoothed one is kept in nref)
+    call gpu_smooth_rho(sim)
+
+    ! 3. Collect test cells above threshold
+    call phew_collect_test(sim, ntest)
+    sim%c%ntest = ntest
+    sim%c%ntest_tot = ntest
+    if (sim%g%myid == 1) then
+       write(*,'(" Found",I12,"  cells above threshold")') ntest
+    endif
+    if (ntest == 0) return
+
+    ! 4. Detect local density peaks
+    call phew_collect_peak(sim, ntest, npeak)
+    sim%c%npeak = npeak
+    sim%c%npeak_tot = npeak
+    if (sim%g%myid == 1) then
+       write(*,'(" Found",I12,"  density peaks")') npeak
+    endif
+    if (npeak == 0) return
+    call phew_allocate_peak(npeak)
+
+    ! 5. Watershed segmentation
+    call phew_collect_patch(ntest)
+
+    ! 6. Merge irrelevant peak patches
+    call phew_merge_clumps(sim, ntest, npeak)
+
+    ! 7. Peak properties and core criteria
+    call phew_clump_properties(sim, ntest, npeak)
+
+    ! 8. Count existing cores in each peak
+    call phew_count_cores(sim, npeak)
+  end subroutine gpu_core_clump
+
+  ! =========================================================================
+  ! CUDA Kernel: Flag the peaks that form a core (select_core_candidates)
+  ! Written by Daniel Han (mini-ramses version October 2026).
+  ! =========================================================================
+  attributes(global) subroutine phew_select_kernel(npeak, relevance_threshold, density_threshold, &
+       & mass4_threshold, use_lp, use_prop, use_mass4, use_energy, use_contracting, &
+       & mseed, boxlen, smallr, gamma, u_floor, factG, pi)
+    integer, value :: npeak
+    real(kind=dp), value :: relevance_threshold, density_threshold, mass4_threshold, mseed
+    logical, value :: use_lp, use_prop, use_mass4, use_energy, use_contracting
+    real(kind=dp), value :: boxlen, smallr, gamma, u_floor, factG, pi
+    integer :: ipeak, itest, igrid, ind
+    real(kind=dp) :: dx, dens, mgas, vv(3), e, ekin, ethermal, c_s2, d_core_LP
+    logical :: ok
+
+    ipeak = threadIdx%x + (blockIdx%x - 1) * blockDim%x
+    if (ipeak > npeak) return
+
+    ok = .true.
+    if (phew_relevance(ipeak) <= relevance_threshold) ok = .false.
+    if (phew_ncore(ipeak) > 0) ok = .false.
+
+    ! Density test of the peak cell (core_candidate_valid_now)
+    itest = phew_peak_test(ipeak)
+    igrid = phew_grid(itest)
+    ind = phew_cell(itest)
+    dx = boxlen / 2d0**phew_level(itest)
+    dens = uold(ind, 1, igrid)
+    if (use_lp) then
+       ! Larson-Penston density for this cell size and sound speed
+       vv(1:3) = uold(ind, 2:4, igrid) / max(dens, smallr)
+       e = uold(ind, 5, igrid) / max(dens, smallr)
+       ekin = 0.5d0*sum(vv(1:3)**2)
+       ethermal = max(e - ekin, u_floor)
+       c_s2 = gamma*(gamma - 1.0d0)*ethermal
+       d_core_LP = 8.86d0*c_s2/pi/factG/dx**2
+       if (.not. dens > d_core_LP) ok = .false.
+    else if (density_threshold > 0.0d0) then
+       if (.not. dens > density_threshold) ok = .false.
+    endif
+
+    ! Enough gas in the peak cell for the seed
+    mgas = dens*dx**3
+    if (mseed > 0.75*mgas) ok = .false.
+
+    ! With LP the cell test replaces the fixed threshold
+    if (.not. use_lp .and. density_threshold > 0.0d0) then
+       if (phew_max_dens(ipeak) <= density_threshold) ok = .false.
+    endif
+    if (use_prop) then
+       if (use_mass4) then
+          if (phew_mass4(ipeak) <= mass4_threshold) ok = .false.
+       endif
+       if (use_energy) then
+          if (phew_bound(ipeak) == 0) ok = .false.
+       endif
+       if (use_contracting) then
+          if (phew_contracting(ipeak) == 0) ok = .false.
+       endif
+    endif
+
+    prefix_sum(ipeak) = merge(1, 0, ok)
+  end subroutine phew_select_kernel
+
+  ! =========================================================================
+  ! CUDA Kernel: Create the new cores and remove their seed from the host cells
+  ! (core_formation and core_debit_host_cell)
+  ! =========================================================================
+  attributes(global) subroutine phew_formation_kernel(nnew, npart_old, npart_tot_old, nstep_coarse, &
+       & mseed, texp, boxlen, smallr, u_floor, metal, imetal)
+    integer, value :: nnew, npart_old, nstep_coarse, imetal
+    integer(kind=8), value :: npart_tot_old
+    real(kind=dp), value :: mseed, texp, boxlen, smallr, u_floor
+    logical, value :: metal
+    integer :: inew, icore, ipeak, itest, igrid, ind, ilevel, ivar
+    real(kind=dp) :: dx, vol, d, dnew, vv(3), e, ekin, ethermal
+    real(kind=dp) :: qpass(1:nvar)
+
+    inew = threadIdx%x + (blockIdx%x - 1) * blockDim%x
+    if (inew > nnew) return
+
+    ipeak = swap_local(inew)
+    icore = npart_old + inew
+    itest = phew_peak_test(ipeak)
+    igrid = phew_grid(itest)
+    ind = phew_cell(itest)
+    ilevel = phew_level(itest)
+
+    ! Position, velocity and old force from the peak cell
+    core_xp(icore, 1:3) = phew_peak_pos(1:3, ipeak)
+    core_vp(icore, 1:3) = phew_peak_vel(1:3, ipeak) - phew_peak_acc(1:3, ipeak)*0.5d0*dtnew_part_d(ilevel)
+    core_fp(icore, 1:3) = phew_peak_acc(1:3, ipeak)
+    core_jp(icore, 1:3) = 0.0d0
+    core_mp(icore) = mseed
+
+    ! Seed removed from the host cell, keeping velocity and specific thermal energy
+    dx = boxlen / 2d0**ilevel
+    vol = dx**3
+    d = max(uold(ind, 1, igrid), smallr)
+    dnew = d - mseed/vol
+    vv(1:3) = uold(ind, 2:4, igrid) / d
+    e = uold(ind, 5, igrid) / d
+    ekin = 0.5d0*sum(vv(1:3)**2)
+    ethermal = max(e - ekin, u_floor)
+    core_up(icore) = ethermal
+    core_zp(icore) = 0.0d0
+    if (metal) core_zp(icore) = uold(ind, imetal, igrid) / d
+    do ivar = 6, nvar
+       qpass(ivar) = uold(ind, ivar, igrid) / d
+    end do
+    uold(ind, 1, igrid) = dnew
+    uold(ind, 2:4, igrid) = dnew*vv(1:3)
+    uold(ind, 5, igrid) = dnew*(ethermal + ekin)
+    do ivar = 6, nvar
+       uold(ind, ivar, igrid) = dnew*qpass(ivar)
+    end do
+
+    core_tp(icore) = texp
+    core_levelp(icore) = ilevel
+    ! Count steps without accretion from the formation step
+    core_nacc(icore) = nstep_coarse
+    core_idp(icore) = int(npart_tot_old + inew, kind=i8b)
+  end subroutine phew_formation_kernel
+
+  ! =========================================================================
+  ! Host Driver: Core formation in the peaks found by gpu_core_clump
+  ! =========================================================================
+  subroutine gpu_core_formation(sim, nstep_coarse, mcore)
+    use constants, only: M_sun, pi
+    use ramses_commons, only: ramses_t
+    implicit none
+    type(ramses_t) :: sim
+    integer, intent(in) :: nstep_coarse
+    real(kind=8), intent(out) :: mcore
+
+    real(kind=8) :: scale_nH, scale_T2, scale_l, scale_d, scale_t, scale_v
+    real(kind=8) :: mseed, density_threshold, factG, u_floor
+    integer :: npeak, nnew
+    integer, device :: nnew_d
+    logical :: use_prop
+
+    mcore = 0.0d0
+    npeak = sim%c%npeak
+    if (npeak <= 0) return
+
+    ! Seed mass and density threshold in code units
+    call units(sim%r, sim%g, scale_l, scale_t, scale_d, scale_v, scale_nH, scale_T2)
+    mseed = sim%r%core_seed_mass * M_sun / (scale_d * scale_l**ndim)
+    density_threshold = sim%r%core_density_threshold / scale_nH
+    factG = 1.0d0
+    if (sim%r%cosmo) factG = 3d0/8d0/pi*sim%g%omega_m*sim%g%aexp
+    u_floor = sim%r%smallc**2/(sim%r%gamma - 1.0d0)
+    use_prop = sim%r%core_use_clump_prop_criteria .or. sim%r%core_use_contracting_all_axes
+
+    ! 1. Flag the peaks that form a core
+    call phew_select_kernel<<<(npeak + 255) / 256, 256>>>(npeak, &
+         & real(sim%r%core_relevance_threshold, kind=dp), density_threshold, sim%r%core_mass4_threshold, &
+         & sim%r%core_use_LP_criteria, use_prop, sim%r%core_use_mass4_criteria, &
+         & sim%r%core_use_energy_criteria, &
+         & sim%r%core_use_contracting_criteria .or. sim%r%core_use_contracting_all_axes, &
+         & mseed, sim%r%boxlen, sim%r%smallr, sim%r%gamma, u_floor, factG, pi)
+
+    ! 2. New core index of each flagged peak
+    call gpu_scan(prefix_sum, 1, npeak, nnew_d)
+    nnew = nnew_d
+    if (nnew == 0) return
+    if (int(sim%core%npart, 8) + nnew > sim%r%ncoremax) then
+       write(*,*) 'Error: not enough memory for core particles'
+       write(*,*) 'Increase ncoremax in the namelist'
+       stop
+    endif
+    call compute_sink_swap_table<<<(npeak + 255) / 256, 256>>>(swap_local, prefix_sum, npeak)
+
+    ! 3. Create the cores
+    dtnew_part_d = sim%g%dtnew
+    call phew_formation_kernel<<<(nnew + 255) / 256, 256>>>(nnew, sim%core%npart, sim%core%npart_tot, &
+         & nstep_coarse, mseed, sim%g%texp, sim%r%boxlen, sim%r%smallr, u_floor, sim%r%metal, sim%r%imetal)
+
+    ! 4. Update host-side metadata
+    sim%core%npart = sim%core%npart + nnew
+    sim%core%npart_tot = sim%core%npart_tot + nnew
+    sim%core%tailp(sim%r%nlevelmax) = sim%core%tailp(sim%r%nlevelmax) + nnew
+    mcore = dble(nnew) * mseed
+  end subroutine gpu_core_formation
+
+end module phew_device

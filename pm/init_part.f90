@@ -11,6 +11,9 @@ recursive subroutine r_init_part(pst)
   use mdl_parameters
 #ifdef _CUDA
   use gpu_manager
+#ifdef CORE
+  use core_formation_module, only: gpu_allocate_phew
+#endif
 #elif defined(_METAL)
   use metal_runner
 #endif
@@ -51,6 +54,7 @@ recursive subroutine r_init_part(pst)
         call init_core(pst%s%r,pst%s%g,pst%s%core)
 #ifdef _CUDA
         call gpu_allocate_core(pst%s)
+        if(pst%s%r%core_form)call gpu_allocate_phew(pst%s)
 #endif
      end if
 #endif
