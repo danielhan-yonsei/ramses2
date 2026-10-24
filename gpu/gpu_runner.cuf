@@ -44,6 +44,20 @@ module gpu_runner
   integer :: iturb_last = 1
   integer :: turb_fft_plan
 
+  !> Modes drawn by add_turbulence, in its loop order: flat cell index, own conjugate flag,
+  !> power and unit wavevector, with the random numbers of the next field (host and device)
+  integer :: turb_nmode = 0
+  integer(kind=4), device, allocatable, dimension(:) :: turb_mode_cell
+  logical, device, allocatable, dimension(:) :: turb_mode_own
+  real(kind=8), device, allocatable, dimension(:) :: turb_mode_power
+  real(kind=8), device, allocatable, dimension(:,:) :: turb_mode_unitk
+  real(kind=8), allocatable, dimension(:,:,:) :: turb_rnd_h
+  real(kind=8), device, allocatable, dimension(:,:,:) :: turb_rnd_d
+
+  !> Hermitian pairs set by add_turbulence: flat cell indices of the mode and of its partner
+  integer :: turb_npair = 0
+  integer(kind=4), device, allocatable, dimension(:,:) :: turb_pair_cell
+
   !> Arrays to hold the gravity variables on the device
   real(kind=dp), device, allocatable, dimension(:,:) :: phi, rho, nref, phi_old
   real(kind=dp), device, allocatable, dimension(:,:,:) :: f
@@ -481,6 +495,56 @@ contains
     call nvtxEndRange()
 
   end subroutine gpu_turb_interp
+
+  !> @brief
+  !> Advance the turbulent spectrum on the device, as add_turbulence and decay_turbulence.
+  !>
+  !> @detail
+  !> The new next spectrum goes to the slot of the last one: every mode decays, the drawn
+  !> modes add their noise from the host random numbers turb_rnd_h, the Hermitian pairs
+  !> copy their partners. The current next spectrum becomes the last one.
+  !>
+  !> @param[in] sim : The simulation object
+  !>
+  ! Written by Daniel Han (mini-ramses version October 2026).
+  subroutine gpu_turb_add_modes(sim)
+    use nvtx
+    use turb_device, only: turb_decay_kernel, turb_add_modes_kernel, turb_conjg_pairs_kernel
+    use turb_commons, only: TURB_GS
+    use ramses_commons, only: ramses_t
+    type(ramses_t), intent(inout)::sim
+
+    integer(kind=4) :: ntot, iold, inew
+    integer :: num_threads, num_blocks
+
+    iold = 3 - iturb_last
+    inew = iturb_last
+    ntot = ndim*TURB_GS**ndim
+    num_threads = 256
+
+    call nvtxStartRange("GPU turb_add_modes", color=0)!green
+    num_blocks = (ntot + num_threads - 1)/num_threads
+    call turb_decay_kernel<<<num_blocks, num_threads>>>(turb_spec_d, iold, inew, &
+         & sim%turb%turb_decay_frac, ntot)
+    if (turb_nmode > 0) then
+       turb_rnd_d = turb_rnd_h
+       num_blocks = (turb_nmode + num_threads - 1)/num_threads
+       call turb_add_modes_kernel<<<num_blocks, num_threads>>>(turb_spec_d, iold, inew, &
+            & turb_mode_cell, turb_mode_own, turb_mode_power, turb_mode_unitk, turb_rnd_d, &
+            & turb_nmode, sim%turb%turb_dt, sim%r%comp_frac, sim%turb%sol_frac, &
+            & sim%turb%turb_decay_frac)
+    endif
+    if (turb_npair > 0) then
+       num_blocks = (turb_npair + num_threads - 1)/num_threads
+       call turb_conjg_pairs_kernel<<<num_blocks, num_threads>>>(turb_spec_d, inew, &
+            & turb_pair_cell, turb_npair)
+    endif
+    call GPU_Error_Check(__FILE__, __LINE__)
+    call nvtxEndRange()
+
+    iturb_last = iold
+
+  end subroutine gpu_turb_add_modes
 
   !> @brief
   !> Transform the next turbulent spectrum into the next acceleration field on the device.

@@ -253,6 +253,23 @@ end subroutine gpu_to_host_part
 !###########################################################
 !###########################################################
 !###########################################################
+subroutine gpu_to_host_turb(pst)
+  use ramses_commons, only: pst_t
+  implicit none
+  type(pst_t)::pst
+
+  if (.not. allocated(turb_spec_d)) return
+
+  call nvtxStartRange("Copy turb spectra from device to host", color=5)!red
+  pst%s%turb%turb_last = turb_spec_d(:,:,:,:,iturb_last)
+  pst%s%turb%turb_next = turb_spec_d(:,:,:,:,3-iturb_last)
+  call GPU_Error_Check(__FILE__, __LINE__)
+  call nvtxEndRange()
+
+end subroutine gpu_to_host_turb
+!###########################################################
+!###########################################################
+!###########################################################
 subroutine gpu_turb_init_fields(pst)
   use ramses_commons, only: pst_t
 #ifdef TURB
@@ -277,6 +294,8 @@ subroutine gpu_turb_init_fields(pst)
   call GPU_Error_Check(__FILE__, __LINE__)
   call nvtxEndRange()
 
+  call gpu_turb_init_modes(pst%s%turb)
+
 #ifdef TURB
   ! Backward FFT of the ndim components of a spectrum, interleaved as in turb_spec_d
   n = TURB_GS
@@ -291,9 +310,123 @@ end subroutine gpu_turb_init_fields
 !###########################################################
 !###########################################################
 !###########################################################
+!> Table of the modes add_turbulence draws, in its loop order, and of the Hermitian pairs
+!> it copies, from the power spectrum of the host.
+! Written by Daniel Han (mini-ramses version October 2026).
+subroutine gpu_turb_init_modes(turb)
+  use turb_commons, only: turb_t, TURB_GS, TGRID_X, TGRID_Y, TGRID_Z, find_conj_pair, find_unitk
+  implicit none
+  type(turb_t)::turb
+
+  integer :: i, j, k, ii, jj, kk, halfway
+  logical :: hermitian_pair
+  integer(kind=4), allocatable :: mode_cell(:), pair_cell(:,:)
+  logical, allocatable :: mode_own(:)
+  real(kind=8), allocatable :: mode_power(:), mode_unitk(:,:)
+
+  halfway = TURB_GS / 2
+  allocate(mode_cell(1:TURB_GS**ndim), mode_own(1:TURB_GS**ndim), mode_power(1:TURB_GS**ndim))
+  allocate(mode_unitk(1:ndim,1:TURB_GS**ndim), pair_cell(1:2,1:TURB_GS**ndim))
+
+  turb_nmode = 0
+  turb_npair = 0
+  do k = 0, TGRID_Z
+     do j = 0, TGRID_Y
+        do i = 0, TGRID_X
+           if (turb%power_spec(i,j,k) == 0.0) cycle
+           call find_conj_pair(i,j,k,ii,jj,kk)
+           hermitian_pair = .false.
+           if (k > halfway) then
+              hermitian_pair = .true.
+           else if (k == 0 .or. 2*k == TURB_GS) then
+              if (j > halfway) then
+                 hermitian_pair = .true.
+              else if (j == 0 .or. 2*j == TURB_GS) then
+                 if (i > halfway) hermitian_pair = .true.
+              end if
+           end if
+           if (hermitian_pair) then
+              turb_npair = turb_npair + 1
+              pair_cell(1,turb_npair) = i + TURB_GS*(j + TURB_GS*k)
+              pair_cell(2,turb_npair) = ii + TURB_GS*(jj + TURB_GS*kk)
+           else
+              turb_nmode = turb_nmode + 1
+              mode_cell(turb_nmode) = i + TURB_GS*(j + TURB_GS*k)
+              mode_own(turb_nmode) = (i == ii .and. j == jj .and. k == kk)
+              mode_power(turb_nmode) = turb%power_spec(i,j,k)
+              call find_unitk(i, j, k, halfway, mode_unitk(:,turb_nmode))
+           end if
+        end do
+     end do
+  end do
+
+  ! Device copies of the tables that are not empty
+  if (turb_nmode > 0) then
+     allocate(turb_mode_cell(1:turb_nmode), turb_mode_own(1:turb_nmode))
+     allocate(turb_mode_power(1:turb_nmode), turb_mode_unitk(1:ndim,1:turb_nmode))
+     allocate(turb_rnd_h(1:3,1:ndim,1:turb_nmode), turb_rnd_d(1:3,1:ndim,1:turb_nmode))
+     turb_mode_cell = mode_cell(1:turb_nmode)
+     turb_mode_own = mode_own(1:turb_nmode)
+     turb_mode_power = mode_power(1:turb_nmode)
+     turb_mode_unitk = mode_unitk(:,1:turb_nmode)
+  endif
+  if (turb_npair > 0) then
+     allocate(turb_pair_cell(1:2,1:turb_npair))
+     turb_pair_cell = pair_cell(:,1:turb_npair)
+  endif
+  call GPU_Error_Check(__FILE__, __LINE__)
+  deallocate(mode_cell, mode_own, mode_power, mode_unitk, pair_cell)
+
+end subroutine gpu_turb_init_modes
+!###########################################################
+!###########################################################
+!###########################################################
+!> Random numbers of the next field, drawn as gaussian_cmplx draws them for each mode of
+!> the table: per dimension the accepted Rnd(1) and w of the polar method, then the ndim
+!> uniforms of the arguments.
+! Written by Daniel Han (mini-ramses version October 2026).
+subroutine gpu_turb_draw_modes(turb)
+  use turb_commons, only: turb_t, ILP, kiss64_core
+  implicit none
+  type(turb_t)::turb
+
+  integer :: imode, d
+  integer(ILP) :: r
+  real(kind=8) :: Rnd(1:2), w
+
+  do imode = 1, turb_nmode
+     do d = 1, ndim
+        do
+           call kiss64_core(turb%kiss64_state, r)
+           Rnd(1) = 2.0 * kiss64_uniform(r) - 1.0
+           call kiss64_core(turb%kiss64_state, r)
+           Rnd(2) = 2.0 * kiss64_uniform(r) - 1.0
+           w = Rnd(1)**2 + Rnd(2)**2
+           if (w<1.0) exit
+        end do
+        turb_rnd_h(1,d,imode) = Rnd(1)
+        turb_rnd_h(2,d,imode) = w
+     end do
+     do d = 1, ndim
+        call kiss64_core(turb%kiss64_state, r)
+        turb_rnd_h(3,d,imode) = kiss64_uniform(r)
+     end do
+  end do
+
+contains
+
+  ! Uniform number in [0,1) from a KISS64 integer, as kiss64_double makes it
+  real(kind=8) function kiss64_uniform(r)
+    integer(ILP), intent(in) :: r
+    kiss64_uniform = transfer(ieor(iand(r, z'FFFFFFFFFFFFF'), z'3FF0000000000000'), 1d0) - 1.0
+  end function kiss64_uniform
+
+end subroutine gpu_turb_draw_modes
+!###########################################################
+!###########################################################
+!###########################################################
 subroutine gpu_turb_next_field(pst)
   use ramses_commons, only: pst_t
-  use turb_commons, only: add_turbulence, decay_turbulence
   implicit none
   type(pst_t)::pst
 
@@ -301,19 +434,11 @@ subroutine gpu_turb_next_field(pst)
   pst%s%turb%turb_last_time = pst%s%turb%turb_next_time
   pst%s%turb%turb_next_time = pst%s%turb%turb_last_time + pst%s%turb%turb_dt
 
-  ! Copy current spectrum, and add more turbulence on the host
-  pst%s%turb%turb_last = pst%s%turb%turb_next
-  call add_turbulence(pst%s%turb, pst%s%turb%turb_next, pst%s%turb%turb_dt, pst%s%r%comp_frac)
-
-  ! Subtract decay of turbulence
-  call decay_turbulence(pst%s%turb%turb_decay_frac, pst%s%turb%turb_last, pst%s%turb%turb_next)
-
-  ! The next spectrum replaces the last one on the device
-  call nvtxStartRange("Upload turb spectrum", color=5)!red
-  turb_spec_d(:,:,:,:,iturb_last) = pst%s%turb%turb_next
-  iturb_last = 3 - iturb_last
-  call GPU_Error_Check(__FILE__, __LINE__)
+  ! Random numbers on the host, the new spectrum on the device
+  call nvtxStartRange("Draw turb random numbers", color=5)!red
+  call gpu_turb_draw_modes(pst%s%turb)
   call nvtxEndRange()
+  call gpu_turb_add_modes(pst%s)
 
   ! Fourier transform on the device
   call gpu_turb_transform(pst%s)

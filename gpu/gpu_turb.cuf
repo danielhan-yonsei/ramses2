@@ -7,6 +7,8 @@ module turb_device
   implicit none
 
 contains
+  ! PI of turb_commons, a default real constant, for the random phases of gaussian_cmplx
+#define PI 3.141592653589793
 
   !=====================================================================================
   ! Time-interpolation of the acceleration field.
@@ -51,6 +53,108 @@ contains
     afield(i) = real(fft_field(i), kind=8) / (turb_gs_real**3) * turb_norm * turb_rms
 
   end subroutine turb_normalise_kernel
+
+  !=====================================================================================
+  ! Decay of every mode, as decay_turbulence: spec(:,inew) = spec(:,iold) -
+  ! spec(:,iold)*decay_frac, elementwise. The modes add_turbulence sets are rewritten after.
+  ! Written by Daniel Han (mini-ramses version October 2026).
+  !=====================================================================================
+  attributes(global) subroutine turb_decay_kernel(spec, iold, inew, decay_frac, ntot)
+    complex(kind=8), device :: spec(1:ndim*TURB_GS**ndim,1:2)
+    integer(kind=4), intent(in), value :: iold, inew, ntot
+    real(kind=8), intent(in), value :: decay_frac
+
+    integer :: i
+
+    i = (blockIdx%x - 1)*blockDim%x + threadIdx%x
+    if (i > ntot) return
+
+    spec(i,inew) = spec(i,iold) - (spec(i,iold) * decay_frac)
+
+  end subroutine turb_decay_kernel
+
+  !=====================================================================================
+  ! New spectrum at the modes add_turbulence draws, one thread per mode: the end of
+  ! gaussian_cmplx from the host random numbers, the power and Helmholtz projection of
+  ! add_turbulence and the decay of decay_turbulence, in the host order of operations.
+  ! Written by Daniel Han (mini-ramses version October 2026).
+  !=====================================================================================
+  attributes(global) subroutine turb_add_modes_kernel(spec, iold, inew, mode_cell, mode_own, &
+       & mode_power, mode_unitk, rnd, nmode, dt, comp_frac, sol_frac, decay_frac)
+    complex(kind=8), device :: spec(1:ndim,0:TURB_GS**ndim-1,1:2)
+    integer(kind=4), device :: mode_cell(*)
+    logical, device :: mode_own(*)
+    real(kind=8), device :: mode_power(*)
+    real(kind=8), device :: mode_unitk(1:ndim,*)
+    real(kind=8), device :: rnd(1:3,1:ndim,*)
+    integer(kind=4), intent(in), value :: iold, inew, nmode
+    real(kind=8), intent(in), value :: dt, comp_frac, sol_frac, decay_frac
+
+    integer :: imode, icell, d
+    real(kind=8) :: w, mag, arg
+    complex(kind=8) :: dot
+    complex(kind=8) :: complex_vec(1:ndim), unitk_cmplx(1:ndim)
+    complex(kind=8) :: comp_cmplx(1:ndim), sol_cmplx(1:ndim)
+
+    imode = (blockIdx%x - 1)*blockDim%x + threadIdx%x
+    if (imode > nmode) return
+    icell = mode_cell(imode)
+
+    ! Gaussian magnitude from the accepted Rnd(1) and w, uniform argument
+    do d = 1, ndim
+       w = rnd(2,d,imode)
+       w = sqrt( (-2.0 * log( w ) ) / w )
+       mag = rnd(1,d,imode) * w
+       arg = (rnd(3,d,imode) * 2.0 * PI) - 1.0
+       complex_vec(d) = cmplx(mag * cos(arg), mag * sin(arg), kind=8)
+    end do
+
+    ! Power spectrum and width, zero phase for an own conjugate mode
+    do d = 1, ndim
+       complex_vec(d) = complex_vec(d) * sqrt(dt) * mode_power(imode)
+       if (mode_own(imode)) complex_vec(d) = abs(complex_vec(d))
+    end do
+
+    ! Helmholtz decomposition
+    dot = (0d0, 0d0)
+    do d = 1, ndim
+       unitk_cmplx(d) = cmplx(mode_unitk(d,imode), kind=8)
+       dot = dot + conjg(unitk_cmplx(d)) * complex_vec(d)
+    end do
+    do d = 1, ndim
+       comp_cmplx(d) = unitk_cmplx(d) * dot
+       sol_cmplx(d) = complex_vec(d) - comp_cmplx(d)
+       complex_vec(d) = comp_cmplx(d)*comp_frac + sol_cmplx(d)*sol_frac
+    end do
+
+    ! Add to the current spectrum, then subtract its decay
+    do d = 1, ndim
+       spec(d,icell,inew) = (spec(d,icell,iold) + complex_vec(d)) - &
+            & (spec(d,icell,iold) * decay_frac)
+    end do
+
+  end subroutine turb_add_modes_kernel
+
+  !=====================================================================================
+  ! Hermitian pairs of add_turbulence, one thread per pair, after turb_add_modes_kernel:
+  ! spec(:,h,inew) = conjg(spec(:,p,inew)).
+  ! Written by Daniel Han (mini-ramses version October 2026).
+  !=====================================================================================
+  attributes(global) subroutine turb_conjg_pairs_kernel(spec, inew, pair_cell, npair)
+    complex(kind=8), device :: spec(1:ndim,0:TURB_GS**ndim-1,1:2)
+    integer(kind=4), device :: pair_cell(1:2,*)
+    integer(kind=4), intent(in), value :: inew, npair
+
+    integer :: ipair, d
+
+    ipair = (blockIdx%x - 1)*blockDim%x + threadIdx%x
+    if (ipair > npair) return
+
+    do d = 1, ndim
+       spec(d,pair_cell(1,ipair),inew) = conjg(spec(d,pair_cell(2,ipair),inew))
+    end do
+
+  end subroutine turb_conjg_pairs_kernel
 
   !=====================================================================================
   ! Turbulent driving force.

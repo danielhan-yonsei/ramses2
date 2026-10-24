@@ -15,6 +15,9 @@ subroutine m_dump_all(pst,write_bkp_file)
   use output_rt_module, only: r_output_rt,file_descriptor_rt,output_rtinfo
   use output_cr_module, only: r_output_cr,file_descriptor_cr,output_crinfo
   use turb_commons, only: write_turb_fields
+#ifdef _CUDA
+  use gpu_manager, only: gpu_to_host_turb
+#endif
   implicit none
   type(pst_t)::pst
   logical::write_bkp_file
@@ -145,6 +148,9 @@ subroutine m_dump_all(pst,write_bkp_file)
         call output_cool(pst%s%cool,filename)
      end if
      if(r%turb)then
+#ifdef _CUDA
+        call gpu_to_host_turb(pst)
+#endif
         call write_turb_fields(pst%s%r,pst%s%turb,filedir)
      endif
      filename=TRIM(filedir)//'info.txt'

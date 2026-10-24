@@ -217,6 +217,7 @@ move_fine.o: gpu_part.o
 multigrid_fine_coarse.o: gpu_runner.o
 multigrid_fine_commons.o: gpu_runner.o
 newdt_fine.o: gpu_part.o
+output_amr.o: gpu_manager.o
 output_clump.o: gpu_clump.o
 phi_fine_cg.o: gpu_runner.o
 refine_utils.o: gpu_runner.o
