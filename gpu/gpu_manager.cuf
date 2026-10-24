@@ -293,7 +293,6 @@ subroutine gpu_update_turb(pst)
   use turb_commons, only: turb_next_field
   implicit none
   type(pst_t)::pst
-  real(kind=8) :: last_tfrac, next_tfrac
 
   ! Advance the host field(s) and mirror each new one to the device.
   do
@@ -307,11 +306,6 @@ subroutine gpu_update_turb(pst)
 
   ! Device time-interpolation.
   call gpu_turb_interp(pst%s)
-
-  ! Keep the host afield_now in sync for host-side diagnostics.
-  last_tfrac = (pst%s%g%t - pst%s%turb%turb_last_time)/pst%s%turb%turb_dt
-  next_tfrac = 1d0 - last_tfrac
-  pst%s%turb%afield_now = next_tfrac*pst%s%turb%afield_last + last_tfrac*pst%s%turb%afield_next
 
 end subroutine gpu_update_turb
 !###########################################################
