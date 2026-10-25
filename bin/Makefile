@@ -46,6 +46,7 @@ CUB_SORT_REFINE = 1
 CUB_SCAN_REFINE = 1
 DEBUG = 0
 HDF5 = 0
+POSIXIO = 1
 MPIF90 = mpif90
 EXEC = ramses
 DEFINES =
@@ -131,6 +132,9 @@ ifneq ($(NSUBGRID),1)
 endif
 ifneq ($(NHILBERT),1)
    DEFINES += -DNHILBERT=$(NHILBERT)
+endif
+ifeq ($(POSIXIO),1)
+   DEFINES += -DPOSIXIO
 endif
 #############################################################################
 # Set proper units and initial conditions
@@ -312,7 +316,7 @@ endif
 MODOBJ += init_neq_chem.o clfind_commons.o turb_commons.o mdl_commons.o mdl.o \
 	 cross_sections_module.o rt_spectra.o  \
 	 ramses_commons.o call_back.o cache_commons.o cache.o gadgetreadfile.o \
-	 boundaries.o output_hydro.o output_poisson.o output_part.o output_rt.o output_cr.o \
+	 boundaries.o posix_io.o output_hydro.o output_poisson.o output_part.o output_rt.o output_cr.o \
 	 output_amr.o movie.o sort.o nbors_utils.o hydro_flag.o marshal.o
 ifeq ($(COMPILER),NVHPC)
    MODOBJ += cub_module_radix_sort_c.o cub_module_radix_sort_f.o \

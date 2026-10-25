@@ -90,6 +90,7 @@ option(CORE   "Activate core particles (needs NDIM=3, HYDRO)" OFF)
 option(DEBUG        "Enable debug compilation flags"               OFF)
 option(MPI          "Enable MPI parallelism"                       OFF)
 option(HDF5         "Enable HDF5 output"                           OFF)
+option(POSIXIO      "Write bulk output data with POSIX pwrite"     ON)
 option(CUDA_PROFILE "Enable NVTX profiling instrumentation"        OFF)
 option(PAPER        "Enable PAPER timing mode (NVHPC only)"        OFF)
 option(CUB_SORT_PART   "Use CUB radix sort for particles (NVHPC)"  ON)
@@ -191,6 +192,9 @@ if(CORE)
 endif()
 if(NOT MPI)
     list(APPEND defines WITHOUTMPI)
+endif()
+if(POSIXIO)
+    list(APPEND defines POSIXIO)
 endif()
 if(COMPILER STREQUAL "METAL")
     list(APPEND defines _METAL)
@@ -365,6 +369,7 @@ set(fortran_files
   amr/timer.f90
   amr/title.f90
   amr/units.f90
+  amr/posix_io.f90
   amr/output_amr.f90
   amr/movie.f90
   amr/load_balance.f90

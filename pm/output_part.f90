@@ -100,6 +100,7 @@ subroutine output_part(s,p,filename)
   use amr_parameters, only: ndim,i8b,flen
   use ramses_commons, only: ramses_t,open_part_file,close_part_file
   use pm_commons, only: part_t
+  use posix_io, only: pio_t,pio_open,pio_write_array,pio_close
   implicit none
   type(ramses_t)::s
   type(part_t)::p
@@ -109,13 +110,16 @@ subroutine output_part(s,p,filename)
   !-----------------------------------
   integer::i,idim,ilun,ivar
   integer(kind=8),dimension(1:p%nvaralloc+1)::nskip
+  integer(kind=8)::offset
   real(kind=4),allocatable,dimension(:)::xsp
   integer(i8b),allocatable,dimension(:)::ii8
   integer,allocatable,dimension(:)::ll
+  type(pio_t)::f
 
   associate(r=>s%r,g=>s%g)
 
   call open_part_file(s,p,filename,nskip,ilun)
+  call pio_open(f,ilun)
 
   allocate(xsp(1:p%npart))
 
@@ -124,8 +128,8 @@ subroutine output_part(s,p,filename)
      do i=1,p%npart
         xsp(i)=p%xp(i,idim)
      end do
-     write(ilun,POS=nskip(idim))
-     write(ilun)xsp
+     offset=nskip(idim)-1
+     call pio_write_array(f,xsp,offset)
   end do
 
   ! Write velocity
@@ -133,8 +137,8 @@ subroutine output_part(s,p,filename)
      do i=1,p%npart
         xsp(i)=p%vp(i,idim)
      end do
-     write(ilun,POS=nskip(idim+ndim))
-     write(ilun)xsp
+     offset=nskip(idim+ndim)-1
+     call pio_write_array(f,xsp,offset)
   end do
   ivar=2*ndim
 
@@ -143,8 +147,8 @@ subroutine output_part(s,p,filename)
      xsp(i)=p%mp(i)
   end do
   ivar=ivar+1
-  write(ilun,POS=nskip(ivar))
-  write(ilun)xsp
+  offset=nskip(ivar)-1
+  call pio_write_array(f,xsp,offset)
 
   ! Write potential (optional)
   if(allocated(p%phip))then
@@ -152,8 +156,8 @@ subroutine output_part(s,p,filename)
         xsp(i)=p%phip(i)
      end do
      ivar=ivar+1
-     write(ilun,POS=nskip(ivar))
-     write(ilun)xsp
+     offset=nskip(ivar)-1
+     call pio_write_array(f,xsp,offset)
   endif
 
   ! Write metallicity
@@ -162,8 +166,8 @@ subroutine output_part(s,p,filename)
         xsp(i)=p%zp(i)
      end do
      ivar=ivar+1
-     write(ilun,POS=nskip(ivar))
-     write(ilun)xsp
+     offset=nskip(ivar)-1
+     call pio_write_array(f,xsp,offset)
   endif
 
   ! Write acceleration
@@ -173,8 +177,8 @@ subroutine output_part(s,p,filename)
            xsp(i)=p%fp(i,idim)
         end do
         ivar=ivar+1
-        write(ilun,POS=nskip(ivar))
-        write(ilun)xsp
+        offset=nskip(ivar)-1
+        call pio_write_array(f,xsp,offset)
      end do
   endif
 
@@ -185,8 +189,8 @@ subroutine output_part(s,p,filename)
            xsp(i)=p%jp(i,idim)
         end do
         ivar=ivar+1
-        write(ilun,POS=nskip(ivar))
-        write(ilun)xsp
+        offset=nskip(ivar)-1
+        call pio_write_array(f,xsp,offset)
      end do
   endif
 
@@ -196,8 +200,8 @@ subroutine output_part(s,p,filename)
         xsp(i)=p%tp(i)
      end do
      ivar=ivar+1
-     write(ilun,POS=nskip(ivar))
-     write(ilun)xsp
+     offset=nskip(ivar)-1
+     call pio_write_array(f,xsp,offset)
   endif
 
   ! Write merging time
@@ -206,8 +210,8 @@ subroutine output_part(s,p,filename)
         xsp(i)=p%tm(i)
      end do
      ivar=ivar+1
-     write(ilun,POS=nskip(ivar))
-     write(ilun)xsp
+     offset=nskip(ivar)-1
+     call pio_write_array(f,xsp,offset)
   endif
 
   ! Write specific internal energy
@@ -216,8 +220,8 @@ subroutine output_part(s,p,filename)
         xsp(i)=p%up(i)
      end do
      ivar=ivar+1
-     write(ilun,POS=nskip(ivar))
-     write(ilun)xsp
+     offset=nskip(ivar)-1
+     call pio_write_array(f,xsp,offset)
   endif
 
   allocate(ll(1:p%npart))
@@ -227,8 +231,8 @@ subroutine output_part(s,p,filename)
      ll(i)=p%levelp(i)
   end do
   ivar=ivar+1
-  write(ilun,POS=nskip(ivar))
-  write(ilun)ll
+  offset=nskip(ivar)-1
+  call pio_write_array(f,ll,offset)
 
   ! Write last accretion step
   if(allocated(p%nacc))then
@@ -236,8 +240,8 @@ subroutine output_part(s,p,filename)
         ll(i)=p%nacc(i)
      end do
      ivar=ivar+1
-     write(ilun,POS=nskip(ivar))
-     write(ilun)ll
+     offset=nskip(ivar)-1
+     call pio_write_array(f,ll,offset)
   endif
 
   deallocate(ll)
@@ -249,8 +253,8 @@ subroutine output_part(s,p,filename)
      ii8(i)=p%idp(i)
   end do
   ivar=ivar+1
-  write(ilun,POS=nskip(ivar))
-  write(ilun)ii8
+  offset=nskip(ivar)-1
+  call pio_write_array(f,ii8,offset)
 
   ! Write merging identity
   if(allocated(p%idm))then
@@ -258,8 +262,8 @@ subroutine output_part(s,p,filename)
         ii8(i)=p%idm(i)
      end do
      ivar=ivar+1
-     write(ilun,POS=nskip(ivar))
-     write(ilun)ii8
+     offset=nskip(ivar)-1
+     call pio_write_array(f,ii8,offset)
   endif
 
   ! Write tracking identity
@@ -268,8 +272,8 @@ subroutine output_part(s,p,filename)
         ii8(i)=p%idt(i)
      end do
      ivar=ivar+1
-     write(ilun,POS=nskip(ivar))
-     write(ilun)ii8
+     offset=nskip(ivar)-1
+     call pio_write_array(f,ii8,offset)
   endif
 
   deallocate(ii8)
@@ -280,8 +284,8 @@ subroutine output_part(s,p,filename)
         xsp(i)=p%size(i)
      end do
      ivar=ivar+1
-     write(ilun,POS=nskip(ivar))
-     write(ilun)xsp
+     offset=nskip(ivar)-1
+     call pio_write_array(f,xsp,offset)
   endif
 
   ! Write charge
@@ -290,12 +294,13 @@ subroutine output_part(s,p,filename)
         xsp(i)=p%charge(i)
      end do
      ivar=ivar+1
-     write(ilun,POS=nskip(ivar))
-     write(ilun)xsp
+     offset=nskip(ivar)-1
+     call pio_write_array(f,xsp,offset)
   endif
 
   deallocate(xsp)
 
+  call pio_close(f)
   call close_part_file(s,p,filename,nskip,ilun)
 
   end associate
@@ -309,6 +314,7 @@ subroutine backup_part(r,g,p,filename)
   use amr_parameters, only: ndim, dp, i8b, flen
   use amr_commons, only: run_t, global_t
   use pm_commons, only: part_t
+  use posix_io, only: pio_t, pio_open, pio_write_array, pio_close
   implicit none
   type(run_t)::r
   type(global_t)::g
@@ -318,10 +324,12 @@ subroutine backup_part(r,g,p,filename)
   integer::i,idim,ilun,ierr
   character(LEN=flen)::fileloc
   character(LEN=5)::nchar
+  integer(kind=8)::offset
   real(dp),allocatable,dimension(:)::xdp
   integer(i8b),allocatable,dimension(:)::ii8
   integer,allocatable,dimension(:)::ll
   logical::file_exist
+  type(pio_t)::f
 
   ilun=10
 
@@ -339,6 +347,11 @@ subroutine backup_part(r,g,p,filename)
   write(ilun)ndim
   write(ilun)p%npart
 
+  ! Bulk data starts right after the header
+  inquire(unit=ilun,pos=offset)
+  offset=offset-1
+  call pio_open(f,ilun)
+
   allocate(xdp(1:p%npart))
 
   ! Write position
@@ -346,7 +359,7 @@ subroutine backup_part(r,g,p,filename)
      do i=1,p%npart
         xdp(i)=p%xp(i,idim)
      end do
-     write(ilun)xdp
+     call pio_write_array(f,xdp,offset)
   end do
 
   ! Write velocity
@@ -354,21 +367,21 @@ subroutine backup_part(r,g,p,filename)
      do i=1,p%npart
         xdp(i)=p%vp(i,idim)
      end do
-     write(ilun)xdp
+     call pio_write_array(f,xdp,offset)
   end do
 
   ! Write mass
   do i=1,p%npart
      xdp(i)=p%mp(i)
   end do
-  write(ilun)xdp
+  call pio_write_array(f,xdp,offset)
 
   ! Write metallicity
   if(allocated(p%zp))then
      do i=1,p%npart
         xdp(i)=p%zp(i)
      end do
-     write(ilun)xdp
+     call pio_write_array(f,xdp,offset)
   endif
 
   ! Write acceleration
@@ -377,7 +390,7 @@ subroutine backup_part(r,g,p,filename)
         do i=1,p%npart
            xdp(i)=p%fp(i,idim)
         end do
-        write(ilun)xdp
+        call pio_write_array(f,xdp,offset)
      end do
   endif
 
@@ -387,7 +400,7 @@ subroutine backup_part(r,g,p,filename)
         do i=1,p%npart
            xdp(i)=p%jp(i,idim)
         end do
-        write(ilun)xdp
+        call pio_write_array(f,xdp,offset)
      end do
   endif
 
@@ -396,7 +409,7 @@ subroutine backup_part(r,g,p,filename)
      do i=1,p%npart
         xdp(i)=p%tp(i)
      end do
-     write(ilun)xdp
+     call pio_write_array(f,xdp,offset)
   endif
 
   ! Write merging time
@@ -404,7 +417,7 @@ subroutine backup_part(r,g,p,filename)
      do i=1,p%npart
         xdp(i)=p%tm(i)
      end do
-     write(ilun)xdp
+     call pio_write_array(f,xdp,offset)
   endif
 
   ! Write specific internal energy
@@ -412,7 +425,7 @@ subroutine backup_part(r,g,p,filename)
      do i=1,p%npart
         xdp(i)=p%up(i)
      end do
-     write(ilun)xdp
+     call pio_write_array(f,xdp,offset)
   endif
 
   allocate(ll(1:p%npart))
@@ -421,14 +434,14 @@ subroutine backup_part(r,g,p,filename)
   do i=1,p%npart
      ll(i)=p%levelp(i)
   end do
-  write(ilun)ll
+  call pio_write_array(f,ll,offset)
 
   ! Write last accretion step
   if(allocated(p%nacc))then
      do i=1,p%npart
         ll(i)=p%nacc(i)
      end do
-     write(ilun)ll
+     call pio_write_array(f,ll,offset)
   endif
 
   deallocate(ll)
@@ -439,14 +452,14 @@ subroutine backup_part(r,g,p,filename)
   do i=1,p%npart
      ii8(i)=p%idp(i)
   end do
-  write(ilun)ii8
+  call pio_write_array(f,ii8,offset)
 
   ! Write merging identity
   if(allocated(p%idm))then
      do i=1,p%npart
         ii8(i)=p%idm(i)
      end do
-     write(ilun)ii8
+     call pio_write_array(f,ii8,offset)
   endif
 
   ! Write tracking identity
@@ -454,7 +467,7 @@ subroutine backup_part(r,g,p,filename)
      do i=1,p%npart
         ii8(i)=p%idt(i)
      end do
-     write(ilun)ii8
+     call pio_write_array(f,ii8,offset)
   endif
 
   deallocate(ii8)
@@ -464,7 +477,7 @@ subroutine backup_part(r,g,p,filename)
      do i=1,p%npart
         xdp(i)=p%size(i)
      end do
-     write(ilun)xdp
+     call pio_write_array(f,xdp,offset)
   endif
 
   ! Write charge
@@ -472,11 +485,12 @@ subroutine backup_part(r,g,p,filename)
      do i=1,p%npart
         xdp(i)=p%charge(i)
      end do
-     write(ilun)xdp
+     call pio_write_array(f,xdp,offset)
   endif
 
   deallocate(xdp)
 
+  call pio_close(f)
   close(ilun)
 
 end subroutine backup_part

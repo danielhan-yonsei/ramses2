@@ -291,38 +291,54 @@ end subroutine halo_mass_def
 !###################################################
 !###################################################
 subroutine output_clump_field(s,filename)
-  use amr_parameters, only: ndim,twotondim,flen
+  use amr_parameters, only: ndim,twotondim,flen,nbuf_io
   use ramses_commons, only: ramses_t,open_file,close_file
+  use posix_io, only: pio_t,pio_open,pio_write,pio_close
+  use iso_c_binding, only: c_loc
   implicit none
   type(ramses_t)::s
   character(LEN=flen)::filename
   !----------------------------------------------------------------
   ! This routine output the peak patch fields for each processor
   !----------------------------------------------------------------
-  integer::ilevel,igrid,ilun
+  integer::ilevel,igrid,ilun,i,nchunk
   integer(kind=8),dimension(s%r%levelmin:s%r%nlevelmax)::nskip
-  real(kind=4),dimension(1:twotondim)::flg1,flg2
-  real(kind=4),dimension(1:twotondim)::rho
+  integer(kind=8)::offset,nbyte
+  real(kind=4),allocatable,dimension(:,:,:),target::pbuf
+  type(pio_t)::f
 
   associate(g=>s%g,r=>s%r,m=>s%m,mdl=>s%mdl)
 
 #ifdef GRAV
 
+  ! Buffer octs to write in large chunks (flag1, flag2, rho)
+  nchunk=max(1,nbuf_io/(4*twotondim*3))
+  allocate(pbuf(1:twotondim,1:3,1:nchunk))
+
   call open_file(s,filename,nskip,ilun)
+  call pio_open(f,ilun)
 
   do ilevel=r%levelmin,r%nlevelmax
-     write(ilun,POS=nskip(ilevel))
+     offset=nskip(ilevel)-1
+     i=0
      do igrid=m%head(ilevel),m%tail(ilevel)
-        rho(1:twotondim)=real(m%rho(1:twotondim,igrid),kind=4)
-        flg1=real(m%flag1(1:twotondim,igrid),kind=4)
-        flg2=real(m%flag2(1:twotondim,igrid),kind=4)
-        write(ilun)flg1
-        write(ilun)flg2
-        write(ilun)rho
+        i=i+1
+        pbuf(:,1,i)=real(m%flag1(1:twotondim,igrid),kind=4)
+        pbuf(:,2,i)=real(m%flag2(1:twotondim,igrid),kind=4)
+        pbuf(:,3,i)=real(m%rho(1:twotondim,igrid),kind=4)
+        if(i==nchunk.or.igrid==m%tail(ilevel))then
+           nbyte=int(4*twotondim*3,kind=8)*i
+           call pio_write(f,c_loc(pbuf),nbyte,offset)
+           offset=offset+nbyte
+           i=0
+        endif
      end do
   enddo
 
+  call pio_close(f)
   call close_file(s,filename,nskip,ilun)
+
+  deallocate(pbuf)
 
 #endif
 
@@ -371,6 +387,7 @@ subroutine output_peak_part(s,p,filename)
   use amr_parameters, only: ndim,i8b,flen
   use ramses_commons, only: ramses_t,open_part_file,close_part_file
   use pm_commons, only: part_t
+  use posix_io, only: pio_t,pio_open,pio_write_array,pio_close
   implicit none
   type(ramses_t)::s
   type(part_t)::p
@@ -380,11 +397,14 @@ subroutine output_peak_part(s,p,filename)
   !------------------------------------
   integer::i,idim,ilun,ivar
   integer(kind=8),dimension(1:p%nvaralloc+1)::nskip
+  integer(kind=8)::offset
   integer,allocatable,dimension(:)::id
+  type(pio_t)::f
 
   associate(r=>s%r,g=>s%g)
 
   call open_part_file(s,p,filename,nskip,ilun)
+  call pio_open(f,ilun)
 
   allocate(id(1:p%npart))
 
@@ -392,18 +412,19 @@ subroutine output_peak_part(s,p,filename)
   do i=1,p%npart
      id(i)=p%hid(i)
   end do
-  write(ilun,POS=nskip(1))
-  write(ilun)id
+  offset=nskip(1)-1
+  call pio_write_array(f,id,offset)
 
   ! Write peak id
   do i=1,p%npart
      id(i)=p%pid(i)
   end do
-  write(ilun,POS=nskip(2))
-  write(ilun)id
+  offset=nskip(2)-1
+  call pio_write_array(f,id,offset)
 
   deallocate(id)
 
+  call pio_close(f)
   call close_part_file(s,p,filename,nskip,ilun)
 
   end associate

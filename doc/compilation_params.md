@@ -28,3 +28,4 @@ You can compile the code by setting these parameters to your preffered value usi
 | `NVECTOR = 32`   | `integer`  | This sets the size of the vector sweeps used in many subroutines of the code. This is used for optimization purposes. This is highly problem and architecture dependant. |
 | `NPRE = 8`       | `4` or `8`  | This sets the number of bytes used to code floating point numbers. `4` means single precision (not recommanded) `8` means double precision. |
 | `DEBUG = 0`      | `0` or `1`  | This turns on or off the debug mode. |
+| `POSIXIO = 1`    | `0` or `1`  | Write the bulk of the output files (AMR, hydro, gravity, particles, RT, CR) with POSIX `pwrite` instead of Fortran I/O. This is much faster with NVHPC, whose runtime splits every write into 8 KiB calls. `0` falls back to Fortran stream I/O. Both produce identical files. |

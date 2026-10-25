@@ -41,6 +41,8 @@ subroutine output_hydro(s,filename)
   use amr_parameters, only: ndim, twotondim, flen, nbuf_io
   use hydro_parameters, only: nvar, nprim, nener,ie
   use ramses_commons, only: ramses_t, open_file, close_file
+  use posix_io, only: pio_t, pio_open, pio_write, pio_close
+  use iso_c_binding, only: c_loc
   implicit none
   type(ramses_t)::s
   character(LEN=flen)::filename
@@ -49,7 +51,9 @@ subroutine output_hydro(s,filename)
   !-----------------------------------
   integer::ilevel,igrid,ilun,irad,n,ind,i,nchunk
   integer(kind=8),dimension(s%r%levelmin:s%r%nlevelmax)::nskip
-  real(kind=4),allocatable,dimension(:,:,:)::qbuf
+  integer(kind=8)::offset,nbyte
+  real(kind=4),allocatable,dimension(:,:,:),target::qbuf
+  type(pio_t)::f
   real(kind=8),dimension(1:twotondim,1:nprim)::qold
   real(kind=8),dimension(1:twotondim,1:nvar)::uold
   real(kind=8),dimension(1:twotondim,1:6)::bold
@@ -65,10 +69,11 @@ subroutine output_hydro(s,filename)
   allocate(qbuf(1:twotondim,1:nprim,1:nchunk))
 
   call open_file(s,filename,nskip,ilun)
+  call pio_open(f,ilun)
 
   do ilevel=r%levelmin,r%nlevelmax
 
-     write(ilun,POS=nskip(ilevel))
+     offset=nskip(ilevel)-1
 
      i=0
      do igrid=m%head(ilevel),m%tail(ilevel)
@@ -136,13 +141,16 @@ subroutine output_hydro(s,filename)
         i=i+1
         qbuf(:,:,i)=real(qold,kind=4)
         if(i==nchunk.or.igrid==m%tail(ilevel))then
-           write(ilun)qbuf(:,:,1:i)
+           nbyte=int(4*twotondim*nprim,kind=8)*i
+           call pio_write(f,c_loc(qbuf),nbyte,offset)
+           offset=offset+nbyte
            i=0
         endif
 
      end do
   enddo
 
+  call pio_close(f)
   call close_file(s,filename,nskip,ilun)
 
   deallocate(qbuf)
@@ -160,6 +168,8 @@ subroutine backup_hydro(r,g,m,mdl,filename)
   use amr_parameters, only: ndim, flen, dp, twotondim, nbuf_io
   use hydro_parameters, only: nvar
   use amr_commons, only: run_t, global_t, mesh_t
+  use posix_io, only: pio_t, pio_open, pio_write, pio_close
+  use iso_c_binding, only: c_loc
   use mdl_module
   implicit none
   type(run_t)::r
@@ -168,23 +178,23 @@ subroutine backup_hydro(r,g,m,mdl,filename)
   type(mdl_t)::mdl
   character(LEN=flen)::filename
 
-  integer::ilevel,igrid,ilun,ierr,nchunk
+  integer::ilevel,igrid,ilun,ierr,nchunk,i,nvbkp
   character(LEN=5)::nchar
   character(LEN=flen)::fileloc
   logical::file_exist
-#ifdef MHD
-  integer::i
-  real(dp),allocatable,dimension(:,:,:)::dbuf
-#endif
+  integer(kind=8)::offset,nbyte
+  real(dp),allocatable,dimension(:,:,:),target::dbuf
+  type(pio_t)::f
 
 #ifdef HYDRO
-  ! Write octs in large chunks
+  ! Buffer octs to write in large chunks (uold, then bold for MHD)
 #ifdef MHD
-  nchunk=max(1,nbuf_io/((storage_size(1.0_dp)/8)*twotondim*(nvar+6)))
-  allocate(dbuf(1:twotondim,1:nvar+6,1:nchunk))
+  nvbkp=nvar+6
 #else
-  nchunk=max(1,nbuf_io/((storage_size(1.0_dp)/8)*twotondim*nvar))
+  nvbkp=nvar
 #endif
+  nchunk=max(1,nbuf_io/((storage_size(1.0_dp)/8)*twotondim*nvbkp))
+  allocate(dbuf(1:twotondim,1:nvbkp,1:nchunk))
 
   ilun=10+mdl_core(mdl)
   call title(g%myid,nchar)
@@ -206,31 +216,30 @@ subroutine backup_hydro(r,g,m,mdl,filename)
   do ilevel=r%levelmin,r%nlevelmax
      write(ilun)m%noct(ilevel)
   enddo
+  ! Bulk data starts right after the header
+  inquire(unit=ilun,pos=offset)
+  offset=offset-1
+  call pio_open(f,ilun)
   do ilevel=r%levelmin,r%nlevelmax
-#ifdef MHD
-     ! Interleave uold and bold for each oct
      i=0
      do igrid=m%head(ilevel),m%tail(ilevel)
         i=i+1
         dbuf(:,1:nvar,i)=m%uold(:,:,igrid)
+#ifdef MHD
         dbuf(:,nvar+1:nvar+6,i)=m%bold(:,:,igrid)
+#endif
         if(i==nchunk.or.igrid==m%tail(ilevel))then
-           write(ilun)dbuf(:,:,1:i)
+           nbyte=int((storage_size(1.0_dp)/8)*twotondim*nvbkp,kind=8)*i
+           call pio_write(f,c_loc(dbuf),nbyte,offset)
+           offset=offset+nbyte
            i=0
         endif
      end do
-#else
-     ! Write contiguous slices of uold directly
-     do igrid=m%head(ilevel),m%tail(ilevel),nchunk
-        write(ilun)m%uold(:,:,igrid:min(igrid+nchunk-1,m%tail(ilevel)))
-     end do
-#endif
   enddo
+  call pio_close(f)
   close(ilun)
 
-#ifdef MHD
   deallocate(dbuf)
-#endif
 
 #endif
 

@@ -40,6 +40,8 @@ subroutine output_cr(s,filename)
   use amr_parameters, only: ndim,twotondim, flen, nbuf_io
   use cr_parameters, only: ncruvar, ncrgrp
   use ramses_commons, only: ramses_t, open_file, close_file
+  use posix_io, only: pio_t, pio_open, pio_write, pio_close
+  use iso_c_binding, only: c_loc
   implicit none
   type(ramses_t)::s
   character(LEN=flen)::filename
@@ -48,7 +50,9 @@ subroutine output_cr(s,filename)
   !-----------------------------------
   integer::ilevel,igrid,ilun,i,nchunk
   integer(kind=8),dimension(s%r%levelmin:s%r%nlevelmax)::nskip
-  real(kind=4),allocatable,dimension(:,:,:)::qbuf
+  integer(kind=8)::offset,nbyte
+  real(kind=4),allocatable,dimension(:,:,:),target::qbuf
+  type(pio_t)::f
 #ifdef DO_CR
   real(kind=8),dimension(1:twotondim,1:ncruvar)::cruold
 #endif
@@ -59,9 +63,10 @@ subroutine output_cr(s,filename)
   nchunk=max(1,nbuf_io/(4*twotondim*ncruvar))
   allocate(qbuf(1:twotondim,1:ncruvar,1:nchunk))
   call open_file(s,filename,nskip,ilun)
+  call pio_open(f,ilun)
   overflow_reported=.false.
   do ilevel=r%levelmin,r%nlevelmax
-     write(ilun,POS=nskip(ilevel))
+     offset=nskip(ilevel)-1
      i=0
      do igrid=m%head(ilevel),m%tail(ilevel)
         i=i+1
@@ -74,11 +79,14 @@ subroutine output_cr(s,filename)
             overflow_reported=.true.
         endif
         if(i==nchunk.or.igrid==m%tail(ilevel))then
-           write(ilun)qbuf(:,:,1:i)
+           nbyte=int(4*twotondim*ncruvar,kind=8)*i
+           call pio_write(f,c_loc(qbuf),nbyte,offset)
+           offset=offset+nbyte
            i=0
         endif
      end do
   end do
+  call pio_close(f)
   call close_file(s,filename,nskip,ilun)
   deallocate(qbuf)
   end associate
@@ -92,6 +100,8 @@ subroutine backup_cr(r,g,m,mdl,filename)
   use amr_parameters, only: ndim,flen,dp,twotondim,nbuf_io
   use cr_parameters, only: ncruvar
   use amr_commons, only: run_t,global_t,mesh_t
+  use posix_io, only: pio_t,pio_open,pio_write,pio_close
+  use iso_c_binding, only: c_loc
   use mdl_module
   implicit none
   type(run_t)::r
@@ -100,12 +110,16 @@ subroutine backup_cr(r,g,m,mdl,filename)
   type(mdl_t)::mdl
   character(LEN=flen)::filename
 
-  integer::ilevel,igrid,ilun,ierr,nchunk
+  integer::ilevel,igrid,ilun,ierr,nchunk,i
   character(LEN=5)::nchar
   character(LEN=flen)::fileloc
   logical::file_exist
-  ! Write octs in large chunks
+  integer(kind=8)::offset,nbyte
+  real(dp),allocatable,dimension(:,:,:),target::dbuf
+  type(pio_t)::f
+  ! Buffer octs to write in large chunks
   nchunk=max(1,nbuf_io/((storage_size(1.0_dp)/8)*twotondim*ncruvar))
+  allocate(dbuf(1:twotondim,1:ncruvar,1:nchunk))
   ilun=10+mdl_core(mdl)
   call title(g%myid,nchar)
   fileloc=TRIM(filename)//TRIM(nchar)
@@ -122,15 +136,28 @@ subroutine backup_cr(r,g,m,mdl,filename)
   do ilevel=r%levelmin,r%nlevelmax
      write(ilun)m%noct(ilevel)
   enddo
+  ! Bulk data starts right after the header
+  inquire(unit=ilun,pos=offset)
+  offset=offset-1
+  call pio_open(f,ilun)
   do ilevel=r%levelmin,r%nlevelmax
 #ifdef DO_CR
-     ! Write contiguous slices of cruold directly
-     do igrid=m%head(ilevel),m%tail(ilevel),nchunk
-        write(ilun)m%cruold(:,:,igrid:min(igrid+nchunk-1,m%tail(ilevel)))
+     i=0
+     do igrid=m%head(ilevel),m%tail(ilevel)
+        i=i+1
+        dbuf(:,:,i)=m%cruold(:,:,igrid)
+        if(i==nchunk.or.igrid==m%tail(ilevel))then
+           nbyte=int((storage_size(1.0_dp)/8)*twotondim*ncruvar,kind=8)*i
+           call pio_write(f,c_loc(dbuf),nbyte,offset)
+           offset=offset+nbyte
+           i=0
+        endif
      end do
 #endif
   enddo
+  call pio_close(f)
   close(ilun)
+  deallocate(dbuf)
 end subroutine backup_cr
 !########################################################################
 !########################################################################

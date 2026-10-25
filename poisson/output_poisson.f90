@@ -39,6 +39,8 @@ end subroutine r_output_poisson
 subroutine output_poisson(s,filename)
   use amr_parameters, only: ndim,twotondim,flen,nbuf_io
   use ramses_commons, only: ramses_t,open_file,close_file
+  use posix_io, only: pio_t,pio_open,pio_write,pio_close
+  use iso_c_binding, only: c_loc
   use mdl_module
   implicit none
   type(ramses_t)::s
@@ -48,7 +50,9 @@ subroutine output_poisson(s,filename)
   !-----------------------------------
   integer::ilevel,igrid,ilun,i,nchunk
   integer(kind=8),dimension(s%r%levelmin:s%r%nlevelmax)::nskip
-  real(kind=4),allocatable,dimension(:,:,:)::fbuf
+  integer(kind=8)::offset,nbyte
+  real(kind=4),allocatable,dimension(:,:,:),target::fbuf
+  type(pio_t)::f
 
   associate(r=>s%r,g=>s%g,m=>s%m,mdl=>s%mdl)
 
@@ -59,21 +63,25 @@ subroutine output_poisson(s,filename)
   allocate(fbuf(1:twotondim,1:ndim+1,1:nchunk))
 
   call open_file(s,filename,nskip,ilun)
+  call pio_open(f,ilun)
 
   do ilevel=r%levelmin,r%nlevelmax
-     write(ilun,POS=nskip(ilevel))
+     offset=nskip(ilevel)-1
      i=0
      do igrid=m%head(ilevel),m%tail(ilevel)
         i=i+1
         fbuf(:,1,i)=real(m%phi(1:twotondim,igrid),kind=4)
         fbuf(:,2:ndim+1,i)=real(m%f(1:twotondim,1:ndim,igrid),kind=4)
         if(i==nchunk.or.igrid==m%tail(ilevel))then
-           write(ilun)fbuf(:,:,1:i)
+           nbyte=int(4*twotondim*(ndim+1),kind=8)*i
+           call pio_write(f,c_loc(fbuf),nbyte,offset)
+           offset=offset+nbyte
            i=0
         endif
      end do
   enddo
 
+  call pio_close(f)
   call close_file(s,filename,nskip,ilun)
 
   deallocate(fbuf)
@@ -91,6 +99,8 @@ subroutine backup_poisson(r,g,m,mdl,filename)
   use amr_parameters, only: ndim,flen,dp,twotondim,nbuf_io
   use hydro_parameters, only: nvar
   use amr_commons, only: run_t,global_t,mesh_t
+  use posix_io, only: pio_t,pio_open,pio_write,pio_close
+  use iso_c_binding, only: c_loc
   use mdl_module
   implicit none
   type(run_t)::r
@@ -105,7 +115,9 @@ subroutine backup_poisson(r,g,m,mdl,filename)
   logical::file_exist
 #ifdef GRAV
   integer::i,nchunk
-  real(dp),allocatable,dimension(:,:,:)::dbuf
+  integer(kind=8)::offset,nbyte
+  real(dp),allocatable,dimension(:,:,:),target::dbuf
+  type(pio_t)::f
 
   ! Buffer octs to write in large chunks (f always has 3 components)
   nchunk=max(1,nbuf_io/((storage_size(1.0_dp)/8)*twotondim*4))
@@ -129,6 +141,10 @@ subroutine backup_poisson(r,g,m,mdl,filename)
      write(ilun)m%noct(ilevel)
   enddo
 #ifdef GRAV
+  ! Bulk data starts right after the header
+  inquire(unit=ilun,pos=offset)
+  offset=offset-1
+  call pio_open(f,ilun)
   do ilevel=r%levelmin,r%nlevelmax
      i=0
      do igrid=m%head(ilevel),m%tail(ilevel)
@@ -136,11 +152,14 @@ subroutine backup_poisson(r,g,m,mdl,filename)
         dbuf(:,1,i)=m%phi(:,igrid)
         dbuf(:,2:4,i)=m%f(:,:,igrid)
         if(i==nchunk.or.igrid==m%tail(ilevel))then
-           write(ilun)dbuf(:,:,1:i)
+           nbyte=int((storage_size(1.0_dp)/8)*twotondim*4,kind=8)*i
+           call pio_write(f,c_loc(dbuf),nbyte,offset)
+           offset=offset+nbyte
            i=0
         endif
      end do
   enddo
+  call pio_close(f)
 #endif
   close(ilun)
 

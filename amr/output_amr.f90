@@ -546,6 +546,8 @@ end subroutine r_output_amr
 subroutine output_amr(s,filename)
   use amr_parameters, only: ndim,flen,twotondim,nbuf_io
   use ramses_commons, only: ramses_t,open_file,close_file
+  use posix_io, only: pio_t,pio_open,pio_write,pio_close
+  use iso_c_binding, only: c_loc
   use mdl_module
   implicit none
   type(ramses_t)::s
@@ -555,7 +557,9 @@ subroutine output_amr(s,filename)
   !-----------------------------------
   integer::ilun,ilevel,igrid,ind,refined_int,i,nchunk
   integer(kind=8),dimension(s%r%levelmin:s%r%nlevelmax)::nskip
-  integer(kind=4),allocatable,dimension(:,:)::ibuf
+  integer(kind=8)::offset,nbyte
+  integer(kind=4),allocatable,dimension(:,:),target::ibuf
+  type(pio_t)::f
 
   associate(r=>s%r,g=>s%g,m=>s%m)
 
@@ -564,9 +568,10 @@ subroutine output_amr(s,filename)
   allocate(ibuf(1:ndim+1,1:nchunk))
 
   call open_file(s,filename,nskip,ilun)
+  call pio_open(f,ilun)
 
   do ilevel=r%levelmin,r%nlevelmax
-     write(ilun,POS=nskip(ilevel))
+     offset=nskip(ilevel)-1
      i=0
      do igrid=m%head(ilevel),m%tail(ilevel)
         i=i+1
@@ -577,12 +582,15 @@ subroutine output_amr(s,filename)
         end do
         ibuf(ndim+1,i)=refined_int
         if(i==nchunk.or.igrid==m%tail(ilevel))then
-           write(ilun)ibuf(:,1:i)
+           nbyte=int(4*(ndim+1),kind=8)*i
+           call pio_write(f,c_loc(ibuf),nbyte,offset)
+           offset=offset+nbyte
            i=0
         endif
      end do
   end do
 
+  call pio_close(f)
   call close_file(s,filename,nskip,ilun)
 
   deallocate(ibuf)
@@ -597,6 +605,8 @@ end subroutine output_amr
 subroutine backup_amr(r,g,m,mdl,filename)
   use amr_parameters, only: ndim, flen, twotondim, nbuf_io
   use amr_commons, only: run_t, global_t, mesh_t
+  use posix_io, only: pio_t, pio_open, pio_write, pio_close
+  use iso_c_binding, only: c_loc
   use mdl_module
   implicit none
   type(run_t)::r
@@ -611,7 +621,9 @@ subroutine backup_amr(r,g,m,mdl,filename)
   character(LEN=flen)::fileloc
   character(LEN=5)::nchar
   logical::file_exist
-  integer(kind=4),allocatable,dimension(:,:)::ibuf
+  integer(kind=8)::offset,nbyte
+  integer(kind=4),allocatable,dimension(:,:),target::ibuf
+  type(pio_t)::f
 
   ! Buffer octs to write in large chunks
   nchunk=max(1,nbuf_io/(4*(ndim+1)))
@@ -632,6 +644,10 @@ subroutine backup_amr(r,g,m,mdl,filename)
   do ilevel=r%levelmin,r%nlevelmax
      write(ilun)m%noct(ilevel)
   end do
+  ! Bulk data starts right after the header
+  inquire(unit=ilun,pos=offset)
+  offset=offset-1
+  call pio_open(f,ilun)
   do ilevel=r%levelmin,r%nlevelmax
      i=0
      do igrid=m%head(ilevel),m%tail(ilevel)
@@ -643,11 +659,14 @@ subroutine backup_amr(r,g,m,mdl,filename)
         end do
         ibuf(ndim+1,i)=refined_int
         if(i==nchunk.or.igrid==m%tail(ilevel))then
-           write(ilun)ibuf(:,1:i)
+           nbyte=int(4*(ndim+1),kind=8)*i
+           call pio_write(f,c_loc(ibuf),nbyte,offset)
+           offset=offset+nbyte
            i=0
         endif
      end do
   end do
+  call pio_close(f)
   close(ilun)
 
   deallocate(ibuf)
