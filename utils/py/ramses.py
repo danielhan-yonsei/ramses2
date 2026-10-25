@@ -339,7 +339,7 @@ def rd_part(nout,**kwargs):
         car2 = str(icpu).zfill(5)
         filename = outdir+prefix2+car2
 
-        npart2 = np.fromfile(filename,dtype=np.int32,count=1,offset=4)[0]
+        npart2 = int(np.fromfile(filename,dtype=np.int32,count=1,offset=4)[0])
         npart = npart + npart2
 
     if silent==False:
@@ -355,7 +355,7 @@ def rd_part(nout,**kwargs):
         car2 = str(icpu).zfill(5)
         filename = outdir+prefix2+car2
 
-        npart2 = np.fromfile(filename,dtype=np.int32,count=1,offset=4)[0]
+        npart2 = int(np.fromfile(filename,dtype=np.int32,count=1,offset=4)[0])
 
         offset = np.int64(8) # prevent overflow
 
@@ -377,7 +377,7 @@ def rd_part(nout,**kwargs):
         for icpu in cpulist:
             car2 = str(icpu).zfill(5)
             filename = path+"/output_"+car1+prefix2+car2
-            npart2 = np.fromfile(filename,dtype=np.int32,count=1,offset=4)[0]
+            npart2 = int(np.fromfile(filename,dtype=np.int32,count=1,offset=4)[0])
             offset = np.int64(8)
 
             # read particle halo id
@@ -463,7 +463,7 @@ def rd_amr(nout,**kwargs):
 
     amr[0].boxlen = i.boxlen
 
-    numbl = np.zeros([nlevelmax,ncpu],dtype=np.int32)
+    numbl = np.zeros([nlevelmax,ncpu],dtype=np.int64)
 
     # Reading and computing total AMR grids count
     for icpu in cpulist:
@@ -571,7 +571,7 @@ def rd_hydro(nout,**kwargs):
         hydro.append(Hydro(ndim,nvar))
         hydro[ilevel].level = ilevel
 
-    numbl = np.zeros([nlevelmax,ncpu],dtype=np.int32)
+    numbl = np.zeros([nlevelmax,ncpu],dtype=np.int64)
 
     # Reading and computing total AMR grids count
     for icpu in cpulist:
