@@ -3522,8 +3522,8 @@ contains
     real(kind=8) :: dx
 
     ! Only the built-in analytical models of gravana run on the GPU
-    if (sim%r%gravity_type > 2) then
-       write(*,*) 'gpu_force_analytic: gravity_type > 2 is not supported on the GPU'
+    if (abs(sim%r%gravity_type) > 2) then
+       write(*,*) 'gpu_force_analytic: |gravity_type| > 2 is not supported on the GPU'
        stop
     end if
 

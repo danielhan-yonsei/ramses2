@@ -48,7 +48,7 @@ subroutine gravana(r,g,x,f,dx,ncell)
   end if
 
   ! Constant vector
-  if(r%gravity_type==1)then
+  if(abs(r%gravity_type)==1)then
      do idim=1,ndim
         do i=1,ncell
            f(i,idim)=r%gravity_params(idim)
@@ -57,7 +57,7 @@ subroutine gravana(r,g,x,f,dx,ncell)
   end if
 
   ! Point mass
-  if(r%gravity_type==2)then
+  if(abs(r%gravity_type)==2)then
      gmass=r%gravity_params(1) ! GM
      emass=r%gravity_params(2) ! Softening length
      xmass=r%gravity_params(3) ! Point mass x-coordinate

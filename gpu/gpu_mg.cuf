@@ -1273,12 +1273,12 @@ contains
     ff = 0.0_dp
 
     ! Constant vector
-    if (gravity_type == 1) then
+    if (abs(gravity_type) == 1) then
        ff(1) = gp1; ff(2) = gp2; ff(3) = gp3
     end if
 
     ! Point mass (gp1 = GM, gp2 = softening length, gp3:gp5 = position)
-    if (gravity_type == 2) then
+    if (abs(gravity_type) == 2) then
        xmass(1) = gp3; xmass(2) = gp4; xmass(3) = gp5
        rx = 0.0_dp
        do idim = 1, ndim

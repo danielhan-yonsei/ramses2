@@ -129,6 +129,7 @@ subroutine force_analytic(r,g,m,ilevel)
         end do
 
         ! Call analytical gravity routine
+        ff=0d0
         call gravana(r,g,xx,ff,dx,ngrid)
 
         ! Scatter variables to main memory
