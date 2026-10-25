@@ -88,7 +88,7 @@ program amr2map
 
   ! Read RAMSES params
   call read_ramses_params
-  write(*,*)'time=',p%t
+  write(*,'(A,1PE12.5)')' time= ',p%t
   ndim=p%ndim
   twotondim=2**ndim
   nvar=p%nvar
@@ -99,7 +99,7 @@ program amr2map
   if(lmax==0)then
      lmax=p%nlevelmax
   endif
-  write(*,*)'Working resolution =',2**lmax
+  write(*,'(A,I0)')' Working resolution = ',2**lmax
   zzmax=1.0
   zzmin=0.0
   if(p%ndim>2)then
@@ -371,13 +371,13 @@ program amr2map
   write(*,*)'Data read and projected.'
   select case (type)
   case (0) ! Refinement map
-     write(*,*)"Max level of refinement =",metmax
+     write(*,'(A,I0)')" Max level of refinement = ",nint(metmax)
   case (15) ! Temperature
-     write(*,*)"Max sound speed =",sqrt(metmax)
+     write(*,'(A,1PE12.5)')" Max sound speed = ",sqrt(metmax)
   case (16) ! Magnetic pressure
-     write(*,*)"Max field strength =",sqrt(metmax)
+     write(*,'(A,1PE12.5)')" Max field strength = ",sqrt(metmax)
   case default ! Passive scalar
-     write(*,*)"Max variable",type,"=",metmax
+     write(*,'(A,I0,A,1PE12.5)')" Max variable ",type," = ",metmax
   end select
 
   nx_full=2**lmax
@@ -411,7 +411,7 @@ program amr2map
   end do
 
   if(.not. do_max)then
-     write(*,*)'Norm rho=',sum(mapgrid(lmax)%rho(imin:imax,jmin:jmax))/(imax-imin+1)/(jmax-jmin+1)
+     write(*,'(A,1PE12.5)')' Norm rho= ',sum(mapgrid(lmax)%rho(imin:imax,jmin:jmax))/(imax-imin+1)/(jmax-jmin+1)
   endif
 
   ! Output file
