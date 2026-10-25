@@ -86,6 +86,45 @@ contains
 
   ! ==========================================================================
   !> @brief
+  !> Debug scan of a cell-based array for NaN/Inf on one level.
+  !>
+  !> @detail
+  !> One thread per cell. Bad cells are counted in nbad, the smallest bad
+  !> oct index is kept in first_oct, and mask accumulates the problem type:
+  !> 1 = NaN/Inf, 2 = non-positive first variable (only if check_pos).
+  attributes(global) subroutine check_nan_kernel(arr, nv, check_pos, head_idx, num_octs, &
+       & nbad, first_oct, mask)
+    integer(kind=4), value :: nv, head_idx, num_octs
+    real(kind=dp), device :: arr(1:twotondim,1:nv,*)
+    logical, value :: check_pos
+    integer(kind=4), device :: nbad, first_oct, mask
+
+    integer :: local_oct, cell_idx, oct_idx, iv, bad, info
+    real(kind=dp) :: x
+
+    local_oct = (blockIdx%x - 1) * (blockDim%x / twotondim) + (threadIdx%x - 1) / twotondim
+    cell_idx  = mod(threadIdx%x - 1, twotondim) + 1
+    if (local_oct >= num_octs) return
+    oct_idx = head_idx + local_oct
+
+    bad = 0
+    do iv = 1, nv
+       x = arr(cell_idx, iv, oct_idx)
+       if (.not. (abs(x) <= huge(x))) bad = ior(bad, 1)
+    end do
+    if (check_pos .and. arr(cell_idx, 1, oct_idx) <= 0) bad = ior(bad, 2)
+
+    if (bad /= 0) then
+       info = atomicadd(nbad, 1)
+       info = atomicmin(first_oct, oct_idx)
+       info = atomicor(mask, bad)
+    end if
+
+  end subroutine check_nan_kernel
+  ! ==========================================================================
+
+  ! ==========================================================================
+  !> @brief
   !> Compute the cell index within an oct.
   !>
   !> @param[in] i : The i index of the cell, must be 0 or 1

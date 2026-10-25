@@ -1377,6 +1377,7 @@ contains
            & sim%r%metal, sim%r%imetal, sim%r%z_ave, sim%r%ientropy, sim%r%dual_energy)
       call GPU_Error_Check(__FILE__, __LINE__)
       call nvtxEndRange()
+      call gpu_check_nan(sim, ilevel, 'star formation')
 
       ! Update host star particle count
       sim%star%npart = sim%star%npart + npart_new
@@ -3635,6 +3636,88 @@ contains
     end if
 
   end subroutine gpu_rhomax
+
+  !> @brief
+  !> Debug check for NaN/Inf in cell-based device arrays.
+  !>
+  !> @detail
+  !> Only active when gpu_debug is set. Scans uold (plus non-positive
+  !> density), rho, phi and f on the given level and stops at the first
+  !> bad array, printing the first bad oct.
+  !>
+  !> @param[in] sim : The simulation object
+  !> @param[in] ilevel : The refinement level to check
+  !> @param[in] label : Name of the stage just completed
+  !>
+  subroutine gpu_check_nan(sim, ilevel, label)
+    use ramses_commons, only: ramses_t
+    type(ramses_t), intent(inout) :: sim
+    integer, intent(in) :: ilevel
+    character(len=*), intent(in) :: label
+
+    if (.not. gpu_debug) return
+    if (sim%m%noct(ilevel) <= 0) return
+
+#ifdef HYDRO
+    call gpu_check_nan_array(sim, uold, nvar, .true., ilevel, label, 'uold')
+#endif
+#ifdef GRAV
+    call gpu_check_nan_array(sim, rho, 1, .false., ilevel, label, 'rho')
+    call gpu_check_nan_array(sim, phi, 1, .false., ilevel, label, 'phi')
+    call gpu_check_nan_array(sim, f, 3, .false., ilevel, label, 'f')
+#endif
+
+  end subroutine gpu_check_nan
+
+  !> @brief
+  !> Run check_nan_kernel on one array and report the first bad oct.
+  !>
+  subroutine gpu_check_nan_array(sim, arr, nv, check_pos, ilevel, label, name)
+    use ramses_commons, only: ramses_t
+    type(ramses_t), intent(in) :: sim
+    integer, intent(in) :: nv, ilevel
+    real(kind=dp), device :: arr(1:twotondim,1:nv,*)
+    logical, intent(in) :: check_pos
+    character(len=*), intent(in) :: label, name
+
+    integer(kind=4) :: head_idx, num_octs, num_threads, num_blocks
+    integer(kind=4), device :: nbad_d, first_oct_d, mask_d
+    integer(kind=4) :: nbad, first_oct, mask
+    integer :: iv
+    type(oct) :: oct_h
+    real(kind=dp) :: arr_h(1:twotondim,1:nv)
+
+    head_idx = sim%m%head(ilevel)
+    num_octs = sim%m%noct(ilevel)
+    num_threads = 256
+    num_blocks = (num_octs + num_threads / twotondim - 1) / (num_threads / twotondim)
+
+    nbad_d = 0
+    first_oct_d = huge(first_oct)
+    mask_d = 0
+    call check_nan_kernel<<<num_blocks, num_threads>>>(arr, nv, check_pos, head_idx, num_octs, &
+         & nbad_d, first_oct_d, mask_d)
+    call GPU_Error_Check(__FILE__, __LINE__)
+    nbad = nbad_d
+    if (nbad == 0) return
+
+    ! device to host
+    first_oct = first_oct_d
+    mask = mask_d
+    oct_h = grid(first_oct)
+    arr_h = arr(:, :, first_oct)
+
+    write(*,'(" GPU_NAN: rank ",I0," after ",A," level ",I0," array ",A,": ",I0," bad cells, mask=",I0)') &
+         & sim%g%myid, label, ilevel, name, nbad, mask
+    write(*,'(" GPU_NAN: first oct ",I0," (",I0," in level) ckey=",*(1X,I0))') &
+         & first_oct, first_oct - head_idx + 1, oct_h%ckey
+    write(*,'(" GPU_NAN: refined=",*(L2))') oct_h%refined
+    do iv = 1, nv
+       write(*,'(" GPU_NAN: var ",I0,":",*(1PE11.3))') iv, arr_h(:, iv)
+    end do
+    error stop 'GPU_NAN'
+
+  end subroutine gpu_check_nan_array
 
   !###########################################################
   !###########################################################

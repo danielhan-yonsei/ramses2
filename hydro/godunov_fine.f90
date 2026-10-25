@@ -1,6 +1,6 @@
 module godunov_fine_module
 #ifdef _CUDA
-  use gpu_runner, only: gpu_godunov, gpu_set_unew, gpu_set_uold, gpu_nimhd_fine
+  use gpu_runner, only: gpu_godunov, gpu_set_unew, gpu_set_uold, gpu_nimhd_fine, gpu_check_nan
 #endif
 #ifdef _METAL
   use metal_runner, only: metal_godunov, metal_set_unew, metal_set_uold
@@ -181,6 +181,7 @@ recursive subroutine r_set_uold(pst,ilevel,input_size)
   else
 #ifdef _CUDA
      call gpu_set_uold(pst%s, ilevel)
+     call gpu_check_nan(pst%s, ilevel, 'hydro')
 #elif defined(_METAL)
      call metal_set_uold(pst%s, ilevel)
 #else

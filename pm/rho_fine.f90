@@ -1,6 +1,7 @@
 module rho_fine_module
 #ifdef _CUDA
-  use gpu_runner, only: gpu_multipole_leaf, gpu_multipole_split, gpu_reset_rho, gpu_cic_multipole, gpu_cic_multipole2
+  use gpu_runner, only: gpu_multipole_leaf, gpu_multipole_split, gpu_reset_rho, gpu_cic_multipole, gpu_cic_multipole2, &
+       & gpu_check_nan
   use part_device, only: gpu_split_part, gpu_sort_part, gpu_cic_part_large, gpu_cic_part_medium, gpu_cic_part_small
   use part_device, only: gpu_split_star, gpu_sort_star, gpu_cic_star_large, gpu_cic_star_medium, gpu_cic_star_small
   use part_device, only: gpu_split_sink, gpu_sort_sink, gpu_cic_sink_large, gpu_cic_sink_medium, gpu_cic_sink_small
@@ -539,6 +540,7 @@ recursive subroutine r_cic_multipole(pst,ilevel,input_size)
 #ifdef _CUDA
      if(pst%s%m%data_on_device)then
         call gpu_cic_multipole2(pst%s, ilevel)
+        call gpu_check_nan(pst%s, ilevel, 'gas deposition')
         return
      endif
 #endif
@@ -708,6 +710,7 @@ recursive subroutine r_cic_part(pst,input_array,input_size)
            else
               call gpu_cic_part_large(pst%s, ilevel, rtype)
            endif
+           call gpu_check_nan(pst%s, ilevel, 'DM deposition')
         endif
         if(pst%s%r%star)then
            if(pst%s%r%star_dep_algo==2)then
@@ -717,6 +720,7 @@ recursive subroutine r_cic_part(pst,input_array,input_size)
            else
               call gpu_cic_star_large(pst%s, ilevel, rtype)
            endif
+           call gpu_check_nan(pst%s, ilevel, 'star deposition')
         endif
         if(pst%s%r%sink)then
            if(pst%s%r%sink_dep_algo==2)then

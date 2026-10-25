@@ -3,7 +3,7 @@ module force_fine_module
   use multigrid_fine_coarse, only: level_count_t
 
 #ifdef _CUDA
-  use gpu_runner, only: gpu_gradient_phi, gpu_epot, gpu_rhomax, gpu_force_analytic
+  use gpu_runner, only: gpu_gradient_phi, gpu_epot, gpu_rhomax, gpu_force_analytic, gpu_check_nan
 #endif
 #ifdef _METAL
   use metal_runner, only: metal_gradient_phi, metal_cmp_epot, metal_cmp_rhomax
@@ -167,6 +167,7 @@ recursive subroutine r_gradient_phi(pst,input,input_size)
   else
 #ifdef _CUDA
      call gpu_gradient_phi(pst%s,input%ilevel)
+     call gpu_check_nan(pst%s, input%ilevel, 'force')
 #elif defined(_METAL)
      call metal_gradient_phi(pst%s,input%ilevel)
 #else

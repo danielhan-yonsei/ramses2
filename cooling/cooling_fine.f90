@@ -1,7 +1,7 @@
 module cooling_fine_module
   use cooling_module, only: set_table, cooling_needs_update
 #ifdef _CUDA
-  use gpu_runner, only: gpu_cooling
+  use gpu_runner, only: gpu_cooling, gpu_check_nan
   use cooling_device, only: gpu_upload_cooling_table
 #elif defined(_METAL)
   use metal_runner, only: metal_cooling, metal_upload_cooling_table
@@ -29,6 +29,7 @@ recursive subroutine r_cooling_fine(pst,ilevel,input_size)
   else
 #ifdef _CUDA
      call gpu_cooling(pst%s, ilevel)
+     call gpu_check_nan(pst%s, ilevel, 'cooling')
 #elif defined(_METAL)
      call metal_cooling(pst%s, ilevel)
 #else
