@@ -632,7 +632,7 @@ subroutine collect_saddle(s)
   integer,dimension(1:nSnei)::igrid_nbor
   integer,dimension(1:nSnei)::icell_nbor
   integer(kind=8)::global_peak_id
-  logical::ok
+  logical::ok,inside
 
   associate(r=>s%r,g=>s%g,m=>s%m,c=>s%c,mdl=>s%mdl)
 
@@ -705,12 +705,16 @@ subroutine collect_saddle(s)
         ! Compute neighboring cell coordinates
         xnei(1:ndim)=xcen(1:ndim)+xSnei(1:ndim,j)
         ! Periodic boundary conditions
+        inside=.true.
         do idim=1,ndim
            if(r%periodic(idim))then
               if(xnei(idim)< m%box_ckey_min(idim,ilevel+1))xnei(idim)=xnei(idim)-m%box_ckey_min(idim,ilevel+1)+m%box_ckey_max(idim,ilevel+1)
               if(xnei(idim)>=m%box_ckey_max(idim,ilevel+1))xnei(idim)=xnei(idim)+m%box_ckey_min(idim,ilevel+1)-m%box_ckey_max(idim,ilevel+1)
            endif
+           inside=inside.and.xnei(idim)>=m%box_ckey_min(idim,ilevel+1).and.xnei(idim)<m%box_ckey_max(idim,ilevel+1)
         end do
+        ! Skip neighbors outside a non-periodic box
+        if(.not.inside)cycle
 
         ! Get neighboring cell at ilevel
         ckey_nbor(1:ndim)=int(xnei(1:ndim))
