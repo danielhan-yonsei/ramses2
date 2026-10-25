@@ -1357,6 +1357,9 @@ contains
       if (head_part + npart_new - 1 > sim%r%nstarmax .or. &
            & npart_new > sim%m%ngridmax + sim%m%ncachemax) then
          write(*,*)'Not enough memory for star particles on GPU'
+         write(*,*)'npart=',sim%star%npart,' npart_new=',npart_new,' nstarmax=',sim%r%nstarmax
+         write(*,*)'ngridmax+ncachemax=',sim%m%ngridmax+sim%m%ncachemax
+         write(*,*)'Increase nstarmax in the namelist'
          stop
       endif
 
