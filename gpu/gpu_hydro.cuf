@@ -2226,6 +2226,13 @@ contains
     rcl = rl * (ul - speed_l)
     rcr = rr * (speed_r - ur)
 
+    ! Degenerate wave fan (both states at the pressure floor, cmax lost
+    ! against |u| in single precision): fall back to HLL for this interface
+    if (.not. (rcl > 0.0_dp .and. rcr > 0.0_dp)) then
+       flux = hll_fluxes(left_state_p, right_state_p, gamma, smallr, smallc2, .false.)
+       return
+    endif
+
     inv_rc = 1.0_dp / (rcr + rcl)
     ustar = (rcr * ur + rcl * ul + (pl - pr)) * inv_rc
     pstar = (rcr * pl + rcl * pr + rcl * rcr * (ul - ur)) * inv_rc
