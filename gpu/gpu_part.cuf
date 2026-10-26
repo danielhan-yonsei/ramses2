@@ -2649,9 +2649,7 @@ attributes(global) subroutine fill_contrib_part_small(sortp_d, xp_d, mp_d, contr
      end if
   else ! baryon number density
      mp_i = mp_d(ipart)
-     if (mass_cut_refine > 0.0d0) then
-        contrib_d(g) = real(mp_i * w / mass_sph, kind=dp)
-     end if
+     contrib_d(g) = real(mp_i * w / mass_sph, kind=dp)
   end if
 
 end subroutine fill_contrib_part_small
