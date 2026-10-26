@@ -335,7 +335,7 @@ subroutine mechanical_feedback(s,p,ilevel,msn_loc)
   real(kind=8),dimension(1:3)::xcen,xnei
   real(kind=8),dimension(1:nvar)::q
   type(msg_large_realdp)::dummy_large_realdp
-  logical::ok_level,ok_leaf,ok
+  logical::ok_level,ok_leaf,ok,ok_face
 
 #ifdef HYDRO
 #if NDIM==3
@@ -456,6 +456,16 @@ subroutine mechanical_feedback(s,p,ilevel,msn_loc)
         if(igrid==0)ok_level=.false.
 
      end if
+
+     ! No feedback from a host cell touching a non-periodic face
+     ok_face=.true.
+     do idim=1,ndim
+        if(.not.r%periodic(idim))then
+           if(ckey(idim)==m%box_ckey_min(idim,hash_cell(0)))ok_face=.false.
+           if(ckey(idim)==m%box_ckey_max(idim,hash_cell(0))-1)ok_face=.false.
+        endif
+     end do
+     if(.not.ok_face)cycle
 
      ! Lock grid in cache
      call lock_cache(m,igrid)
