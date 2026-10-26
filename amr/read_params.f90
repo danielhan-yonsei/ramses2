@@ -1404,6 +1404,52 @@ subroutine m_read_params(pst)
      write(*,*)'Error: sink_delta_tout>0 (high frequency sink dump) is not supported on GPU'
      nml_ok=.false.
   endif
+  ! The GPU hydro has slope_type 0 to 3, and 0 to 2 under MHD
+  if(slope_type>3)then
+     write(*,*)'Error: slope_type>3 is not supported on GPU'
+     nml_ok=.false.
+  endif
+#ifdef MHD
+  if(slope_type==3)then
+     write(*,*)'Error: slope_type=3 is not supported on GPU with MHD, use slope_type=2'
+     nml_ok=.false.
+  endif
+#endif
+  ! The GPU flags cells on the density, pressure and magnetic gradients only
+  if(err_grad_u>=0.0d0.or.(neq_chem.and.(err_grad_xHI>=0.0d0.or.err_grad_xHII>=0.0d0)))then
+     write(*,*)'Error: err_grad_u, err_grad_xHI and err_grad_xHII are not supported on GPU'
+     nml_ok=.false.
+  endif
+  ! The GPU deposits the mass and interpolates the force with CIC only
+  if(part.and.part_mass_deposition_scheme/=1)then
+     write(*,*)'Error: part_mass_deposition_scheme/=1 (TSC or PCS) is not supported on GPU'
+     nml_ok=.false.
+  endif
+  if(star.and.star_mass_deposition_scheme/=1)then
+     write(*,*)'Error: star_mass_deposition_scheme/=1 (TSC or PCS) is not supported on GPU'
+     nml_ok=.false.
+  endif
+  if(sink.and.sink_mass_deposition_scheme/=1)then
+     write(*,*)'Error: sink_mass_deposition_scheme/=1 (TSC or PCS) is not supported on GPU'
+     nml_ok=.false.
+  endif
+  if(part.and.part_force_interpolation_scheme/=1)then
+     write(*,*)'Error: part_force_interpolation_scheme/=1 (TSC or PCS) is not supported on GPU'
+     nml_ok=.false.
+  endif
+  if(star.and.star_force_interpolation_scheme/=1)then
+     write(*,*)'Error: star_force_interpolation_scheme/=1 (TSC or PCS) is not supported on GPU'
+     nml_ok=.false.
+  endif
+  if(sink.and.sink_force_interpolation_scheme/=1)then
+     write(*,*)'Error: sink_force_interpolation_scheme/=1 (TSC or PCS) is not supported on GPU'
+     nml_ok=.false.
+  endif
+  ! The GPU has no boundary regions for a non-periodic box
+  if(any(.not.periodic(1:ndim)).or.nbound>0)then
+     write(*,*)'Error: a non-periodic box (periodic=.false. or nbound>0) is not supported on GPU'
+     nml_ok=.false.
+  endif
 #endif
 
   ! eta_ohm is a synonym of etamag

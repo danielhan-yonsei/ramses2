@@ -5,6 +5,7 @@ module hydro_device
   use gpu_utils
   use cudafor
   implicit none
+  private :: mix64, fnv64, fnv32, hash_set, hash_get, hash_update, hash_free
 
   !> @brief
   !> Cell index and grid offset to access neighbors.
@@ -197,10 +198,14 @@ module hydro_device
 #endif
   real(kind=dp), device :: switch_llf_dmin_d
   real(kind=dp), device :: switch_llf_pmin_d
+#if NENER>0
+  real(kind=dp), device :: gamma_rad_d(1:nener+1)
+#endif
 
 contains
 
   include 'gpu_reduce.cuf'
+  include 'gpu_hash.cuf'
 
   ! ==========================================================================
   !> @brief
@@ -351,6 +356,75 @@ contains
   ! ==========================================================================
 
   ! ==========================================================================
+  !> Unsplit 3D slopes (half*dq) for slope_type=3, as uslope on the CPU.
+  ! Written by Daniel Han (mini-ramses version October 2026).
+  attributes(device) subroutine slope_unsplit3d(f, i, j, k, sx, sy, sz)
+    real(kind=dp), intent(in) :: f(0:2*nsubgrid+3, 0:2*nsubgrid+3, 0:2*nsubgrid+3)
+    integer, value :: i, j, k
+    real(kind=dp), intent(out) :: sx, sy, sz
+    real(kind=dp) :: fc, vmin, vmax, dfx, dfy, dfz, dff, slop
+    real(kind=dp) :: dflll,dflml,dflrl,dfmll,dfmml,dfmrl,dfrll,dfrml,dfrrl
+    real(kind=dp) :: dfllm,dflmm,dflrm,dfmlm,dfmmm,dfmrm,dfrlm,dfrmm,dfrrm
+    real(kind=dp) :: dfllr,dflmr,dflrr,dfmlr,dfmmr,dfmrr,dfrlr,dfrmr,dfrrr
+    real(kind=dp), parameter :: half = 0.5_dp, zero = 0.0_dp, one = 1.0_dp
+
+    fc = f(i,j,k)
+
+    dflll = f(i-1,j-1,k-1)-fc
+    dflml = f(i-1,j  ,k-1)-fc
+    dflrl = f(i-1,j+1,k-1)-fc
+    dfmll = f(i  ,j-1,k-1)-fc
+    dfmml = f(i  ,j  ,k-1)-fc
+    dfmrl = f(i  ,j+1,k-1)-fc
+    dfrll = f(i+1,j-1,k-1)-fc
+    dfrml = f(i+1,j  ,k-1)-fc
+    dfrrl = f(i+1,j+1,k-1)-fc
+
+    dfllm = f(i-1,j-1,k  )-fc
+    dflmm = f(i-1,j  ,k  )-fc
+    dflrm = f(i-1,j+1,k  )-fc
+    dfmlm = f(i  ,j-1,k  )-fc
+    dfmmm = f(i  ,j  ,k  )-fc
+    dfmrm = f(i  ,j+1,k  )-fc
+    dfrlm = f(i+1,j-1,k  )-fc
+    dfrmm = f(i+1,j  ,k  )-fc
+    dfrrm = f(i+1,j+1,k  )-fc
+
+    dfllr = f(i-1,j-1,k+1)-fc
+    dflmr = f(i-1,j  ,k+1)-fc
+    dflrr = f(i-1,j+1,k+1)-fc
+    dfmlr = f(i  ,j-1,k+1)-fc
+    dfmmr = f(i  ,j  ,k+1)-fc
+    dfmrr = f(i  ,j+1,k+1)-fc
+    dfrlr = f(i+1,j-1,k+1)-fc
+    dfrmr = f(i+1,j  ,k+1)-fc
+    dfrrr = f(i+1,j+1,k+1)-fc
+
+    vmin = min(dflll,dflml,dflrl,dfmll,dfmml,dfmrl,dfrll,dfrml,dfrrl, &
+         &     dfllm,dflmm,dflrm,dfmlm,dfmmm,dfmrm,dfrlm,dfrmm,dfrrm, &
+         &     dfllr,dflmr,dflrr,dfmlr,dfmmr,dfmrr,dfrlr,dfrmr,dfrrr)
+    vmax = max(dflll,dflml,dflrl,dfmll,dfmml,dfmrl,dfrll,dfrml,dfrrl, &
+         &     dfllm,dflmm,dflrm,dfmlm,dfmmm,dfmrm,dfrlm,dfrmm,dfrrm, &
+         &     dfllr,dflmr,dflrr,dfmlr,dfmmr,dfmrr,dfrlr,dfrmr,dfrrr)
+
+    dfx  = half*(f(i+1,j,k)-f(i-1,j,k))
+    dfy  = half*(f(i,j+1,k)-f(i,j-1,k))
+    dfz  = half*(f(i,j,k+1)-f(i,j,k-1))
+    dff  = half*(abs(dfx)+abs(dfy)+abs(dfz))
+
+    if(dff>zero)then
+       slop = min(one,min(abs(vmin),abs(vmax))/dff)
+    else
+       slop = one
+    endif
+
+    sx = half*(slop*dfx)
+    sy = half*(slop*dfy)
+    sz = half*(slop*dfz)
+  end subroutine slope_unsplit3d
+  ! ==========================================================================
+
+  ! ==========================================================================
   !> Limited TVD slopes (half*dq) for hydro and transverse B.
   attributes(device) subroutine compute_tvd_slopes(local_subgrid, i, j, k, slope, &
 #if NVAR>5+NENER
@@ -403,47 +477,56 @@ contains
     Byc_zp = 0.5_dp*(bf%by(i,j,k+1) + bf%by(i,j+1,k+1))
 #endif
 
-    slopes_x%density    = 0.5_dp * slope_moncen(local_subgrid%density   (i - 1, j, k), cell%density,    local_subgrid%density   (i + 1, j, k), slope)
-    slopes_x%velocity_x = 0.5_dp * slope_moncen(local_subgrid%velocity_x(i - 1, j, k), cell%velocity_x, local_subgrid%velocity_x(i + 1, j, k), slope)
-    slopes_x%velocity_y = 0.5_dp * slope_moncen(local_subgrid%velocity_y(i - 1, j, k), cell%velocity_y, local_subgrid%velocity_y(i + 1, j, k), slope)
-    slopes_x%velocity_z = 0.5_dp * slope_moncen(local_subgrid%velocity_z(i - 1, j, k), cell%velocity_z, local_subgrid%velocity_z(i + 1, j, k), slope)
-    slopes_x%pressure   = 0.5_dp * slope_moncen(local_subgrid%pressure  (i - 1, j, k), cell%pressure,   local_subgrid%pressure  (i + 1, j, k), slope)
+    if (slope == 3) then
+       ! Unsplit limiter on the 3x3x3 stencil
+       call slope_unsplit3d(local_subgrid%density,    i, j, k, slopes_x%density,    slopes_y%density,    slopes_z%density)
+       call slope_unsplit3d(local_subgrid%velocity_x, i, j, k, slopes_x%velocity_x, slopes_y%velocity_x, slopes_z%velocity_x)
+       call slope_unsplit3d(local_subgrid%velocity_y, i, j, k, slopes_x%velocity_y, slopes_y%velocity_y, slopes_z%velocity_y)
+       call slope_unsplit3d(local_subgrid%velocity_z, i, j, k, slopes_x%velocity_z, slopes_y%velocity_z, slopes_z%velocity_z)
+       call slope_unsplit3d(local_subgrid%pressure,   i, j, k, slopes_x%pressure,   slopes_y%pressure,   slopes_z%pressure)
+    else
+       slopes_x%density    = 0.5_dp * slope_moncen(local_subgrid%density   (i - 1, j, k), cell%density,    local_subgrid%density   (i + 1, j, k), slope)
+       slopes_x%velocity_x = 0.5_dp * slope_moncen(local_subgrid%velocity_x(i - 1, j, k), cell%velocity_x, local_subgrid%velocity_x(i + 1, j, k), slope)
+       slopes_x%velocity_y = 0.5_dp * slope_moncen(local_subgrid%velocity_y(i - 1, j, k), cell%velocity_y, local_subgrid%velocity_y(i + 1, j, k), slope)
+       slopes_x%velocity_z = 0.5_dp * slope_moncen(local_subgrid%velocity_z(i - 1, j, k), cell%velocity_z, local_subgrid%velocity_z(i + 1, j, k), slope)
+       slopes_x%pressure   = 0.5_dp * slope_moncen(local_subgrid%pressure  (i - 1, j, k), cell%pressure,   local_subgrid%pressure  (i + 1, j, k), slope)
+
+       slopes_y%density    = 0.5_dp * slope_moncen(local_subgrid%density   (i, j - 1, k), cell%density,    local_subgrid%density(   i, j + 1, k), slope)
+       slopes_y%velocity_x = 0.5_dp * slope_moncen(local_subgrid%velocity_x(i, j - 1, k), cell%velocity_x, local_subgrid%velocity_x(i, j + 1, k), slope)
+       slopes_y%velocity_y = 0.5_dp * slope_moncen(local_subgrid%velocity_y(i, j - 1, k), cell%velocity_y, local_subgrid%velocity_y(i, j + 1, k), slope)
+       slopes_y%velocity_z = 0.5_dp * slope_moncen(local_subgrid%velocity_z(i, j - 1, k), cell%velocity_z, local_subgrid%velocity_z(i, j + 1, k), slope)
+       slopes_y%pressure   = 0.5_dp * slope_moncen(local_subgrid%pressure  (i, j - 1, k), cell%pressure,   local_subgrid%pressure(  i, j + 1, k), slope)
+
+       slopes_z%density    = 0.5_dp * slope_moncen(local_subgrid%density   (i, j, k - 1), cell%density,    local_subgrid%density   (i, j, k + 1), slope)
+       slopes_z%velocity_x = 0.5_dp * slope_moncen(local_subgrid%velocity_x(i, j, k - 1), cell%velocity_x, local_subgrid%velocity_x(i, j, k + 1), slope)
+       slopes_z%velocity_y = 0.5_dp * slope_moncen(local_subgrid%velocity_y(i, j, k - 1), cell%velocity_y, local_subgrid%velocity_y(i, j, k + 1), slope)
+       slopes_z%velocity_z = 0.5_dp * slope_moncen(local_subgrid%velocity_z(i, j, k - 1), cell%velocity_z, local_subgrid%velocity_z(i, j, k + 1), slope)
+       slopes_z%pressure   = 0.5_dp * slope_moncen(local_subgrid%pressure  (i, j, k - 1), cell%pressure,   local_subgrid%pressure  (i, j, k + 1), slope)
+    end if
 #ifdef MHD
     ! Transverse B slopes; normal-B slopes unused (face-predicted).
+    ! slope_type=3 is refused under MHD (read_params).
     slopes_x%Bx         = 0.0_dp
     slopes_x%By         = 0.5_dp * slope_moncen(Byc_xm, Byc, Byc_xp, slope)
     slopes_x%Bz         = 0.5_dp * slope_moncen(Bzc_xm, Bzc, Bzc_xp, slope)
-#endif
-
-    slopes_y%density    = 0.5_dp * slope_moncen(local_subgrid%density   (i, j - 1, k), cell%density,    local_subgrid%density(   i, j + 1, k), slope)
-    slopes_y%velocity_x = 0.5_dp * slope_moncen(local_subgrid%velocity_x(i, j - 1, k), cell%velocity_x, local_subgrid%velocity_x(i, j + 1, k), slope)
-    slopes_y%velocity_y = 0.5_dp * slope_moncen(local_subgrid%velocity_y(i, j - 1, k), cell%velocity_y, local_subgrid%velocity_y(i, j + 1, k), slope)
-    slopes_y%velocity_z = 0.5_dp * slope_moncen(local_subgrid%velocity_z(i, j - 1, k), cell%velocity_z, local_subgrid%velocity_z(i, j + 1, k), slope)
-    slopes_y%pressure   = 0.5_dp * slope_moncen(local_subgrid%pressure  (i, j - 1, k), cell%pressure,   local_subgrid%pressure(  i, j + 1, k), slope)
-#ifdef MHD
     slopes_y%Bx         = 0.5_dp * slope_moncen(Bxc_ym, Bxc, Bxc_yp, slope)
     slopes_y%By         = 0.0_dp
     slopes_y%Bz         = 0.5_dp * slope_moncen(Bzc_ym, Bzc, Bzc_yp, slope)
-#endif
-
-    slopes_z%density    = 0.5_dp * slope_moncen(local_subgrid%density   (i, j, k - 1), cell%density,    local_subgrid%density   (i, j, k + 1), slope)
-    slopes_z%velocity_x = 0.5_dp * slope_moncen(local_subgrid%velocity_x(i, j, k - 1), cell%velocity_x, local_subgrid%velocity_x(i, j, k + 1), slope)
-    slopes_z%velocity_y = 0.5_dp * slope_moncen(local_subgrid%velocity_y(i, j, k - 1), cell%velocity_y, local_subgrid%velocity_y(i, j, k + 1), slope)
-    slopes_z%velocity_z = 0.5_dp * slope_moncen(local_subgrid%velocity_z(i, j, k - 1), cell%velocity_z, local_subgrid%velocity_z(i, j, k + 1), slope)
-    slopes_z%pressure   = 0.5_dp * slope_moncen(local_subgrid%pressure  (i, j, k - 1), cell%pressure,   local_subgrid%pressure  (i, j, k + 1), slope)
-#ifdef MHD
     slopes_z%Bx         = 0.5_dp * slope_moncen(Bxc_zm, Bxc, Bxc_zp, slope)
     slopes_z%By         = 0.5_dp * slope_moncen(Byc_zm, Byc, Byc_zp, slope)
     slopes_z%Bz         = 0.0_dp
-
 #endif
 #if NVAR>5+NENER
     ! Passive-scalar slopes (consumed by the scalar advection predictor, C1)
     do n = 1, nscalar
-       rscal = scalar_sub(i,j,k,n)
-       dscal_x(n) = 0.5_dp*slope_moncen(scalar_sub(i-1,j,k,n), rscal, scalar_sub(i+1,j,k,n), slope)
-       dscal_y(n) = 0.5_dp*slope_moncen(scalar_sub(i,j-1,k,n), rscal, scalar_sub(i,j+1,k,n), slope)
-       dscal_z(n) = 0.5_dp*slope_moncen(scalar_sub(i,j,k-1,n), rscal, scalar_sub(i,j,k+1,n), slope)
+       if (slope == 3) then
+          call slope_unsplit3d(scalar_sub(0,0,0,n), i, j, k, dscal_x(n), dscal_y(n), dscal_z(n))
+       else
+          rscal = scalar_sub(i,j,k,n)
+          dscal_x(n) = 0.5_dp*slope_moncen(scalar_sub(i-1,j,k,n), rscal, scalar_sub(i+1,j,k,n), slope)
+          dscal_y(n) = 0.5_dp*slope_moncen(scalar_sub(i,j-1,k,n), rscal, scalar_sub(i,j+1,k,n), slope)
+          dscal_z(n) = 0.5_dp*slope_moncen(scalar_sub(i,j,k-1,n), rscal, scalar_sub(i,j,k+1,n), slope)
+       end if
     end do
 #endif
 
@@ -4876,6 +4959,253 @@ contains
 #endif
 
   end subroutine set_uold_kernel
+  ! =========================================================================
+
+  ! =========================================================================
+  !> @brief
+  !> Grid and cell of the cell with key hash_nbor, as get_parent_cell on the CPU.
+  !> igridn is 0 if the grid is not in the hash table.
+  !>
+  attributes(device) subroutine get_parent_cell_d(hash_nbor, hash_key, hash_val, hash_size, &
+       & ckey_max, key_off, igridn, icelln)
+    integer(kind=8), intent(in) :: hash_nbor(0:3)
+    integer(kind=8), device :: hash_key(*)
+    integer(kind=4), device :: hash_val(*)
+    integer(kind=4), intent(in), value :: hash_size
+    integer(kind=4), device :: ckey_max(*)
+    integer(kind=8), device :: key_off(*)
+    integer, intent(out) :: igridn, icelln
+
+    integer :: ilev_par
+    integer(kind=8) :: ix, iy, iz, nx, offset, key
+    integer :: bit(3)
+
+    ilev_par = hash_nbor(0) - 1
+
+    ix = hash_nbor(1) / 2
+    iy = hash_nbor(2) / 2
+    iz = hash_nbor(3) / 2
+
+    bit(1) = hash_nbor(1) - 2 * ix
+    bit(2) = hash_nbor(2) - 2 * iy
+    bit(3) = hash_nbor(3) - 2 * iz
+    icelln = 1 + bit(1) + 2*bit(2) + 4*bit(3)
+
+    nx = ckey_max(ilev_par)
+    offset = key_off(ilev_par)
+    key = offset + ix + iy*nx + iz*nx*nx
+
+    igridn = hash_get(hash_key, hash_val, hash_size, key)
+  end subroutine get_parent_cell_d
+  ! =========================================================================
+
+  ! =========================================================================
+  !> @brief
+  !> Add the hydro source terms to unew, as source_hydro_fine on the CPU (one thread per cell).
+  !>
+  !> @detail
+  !> A missing neighbour is replaced by its father cell.
+  !>
+  ! Written by Daniel Han (mini-ramses version October 2026).
+  attributes(global) subroutine source_hydro_kernel(grid, uold, unew, bnew, &
+       & hash_key, hash_val, hash_size, ckey_max, key_off, &
+       & periodic, box_ckey_min, box_ckey_max, ngridmax, head_idx, num_octs, ilevel, &
+       & dx, dt, hexp, gamma, smallr, smallc, entropy, dual_energy, T2_fix, ientropy, &
+       & sgs_turb, equilibrium_sgs, iturb, smagorinsky_lilly_constant, nstep_coarse)
+    implicit none
+    type(oct), device :: grid(*)
+    real(kind=dp), device :: uold(1:twotondim,1:nvar,*)
+    real(kind=dp), device :: unew(1:twotondim,1:nvar,*)
+    real(kind=dp), device :: bnew(1:twotondim,1:6,*)
+    integer(kind=8), device :: hash_key(*)
+    integer(kind=4), device :: hash_val(*)
+    integer(kind=4), intent(in), value :: hash_size
+    integer(kind=4), device :: ckey_max(*)
+    integer(kind=8), device :: key_off(*)
+    logical, device :: periodic(1:3)
+    integer(kind=4), device :: box_ckey_min(1:3,*)
+    integer(kind=4), device :: box_ckey_max(1:3,*)
+    integer(kind=4), intent(in), value :: ngridmax
+    integer(kind=4), intent(in), value :: head_idx
+    integer(kind=4), intent(in), value :: num_octs
+    integer(kind=4), intent(in), value :: ilevel
+    real(kind=dp), intent(in), value :: dx, dt, hexp, gamma, smallr, smallc
+    logical, intent(in), value :: entropy
+    real(kind=dp), intent(in), value :: dual_energy, T2_fix
+    integer(kind=4), intent(in), value :: ientropy
+    logical, intent(in), value :: sgs_turb, equilibrium_sgs
+    integer(kind=4), intent(in), value :: iturb
+    real(kind=dp), intent(in), value :: smagorinsky_lilly_constant
+    integer(kind=4), intent(in), value :: nstep_coarse
+
+    integer :: block_idx, oct_idx, ind, igrid
+    integer :: idim, jdim, i_nbor
+    integer :: igridd, igridg, icelld, icellg, igridp, icellp
+    integer, dimension(1:6) :: igridn, icelln
+    real(kind=dp), dimension(1:6) :: dxn
+    integer(kind=8), dimension(0:3) :: cell_key, hash_nbor
+    real(kind=dp), dimension(1:3,1:3) :: vg, vd, gradu, E
+    real(kind=dp), dimension(1:3) :: dxg, dxd
+    real(kind=dp) :: phi_diss, divu
+    real(kind=dp) :: d, u, v, w, d_old, sigma
+    real(kind=dp) :: e_kin, e_mag, e_cons, e_prim, e_turb, e_trunc, T2_cons
+#ifdef MHD
+    real(kind=dp) :: bx, by, bz
+#endif
+#if NENER>0
+    integer :: irad
+#endif
+
+    block_idx = blockIdx%x - 1
+
+    ! Compute the oct idx
+    oct_idx = block_idx * blockDim%y + threadIdx%y - 1
+    if (oct_idx >= num_octs) return
+    igrid = head_idx + oct_idx
+
+    ! Compute the cell idx
+    ind = threadIdx%x
+
+    ! Key of this cell, one level below its grid
+    cell_key(0) = ilevel + 1
+    cell_key(1) = 2 * grid(igrid)%ckey(1) + mod(ind-1, 2)
+    cell_key(2) = 2 * grid(igrid)%ckey(2) + mod((ind-1)/2, 2)
+    cell_key(3) = 2 * grid(igrid)%ckey(3) + (ind-1)/4
+
+    ! The six face neighbours: -x, +x, -y, +y, -z, +z
+    do i_nbor = 1, 6
+       hash_nbor(0) = cell_key(0)
+       hash_nbor(1:3) = cell_key(1:3)
+       idim = (i_nbor + 1) / 2
+       hash_nbor(idim) = hash_nbor(idim) + (2 * mod(i_nbor-1, 2) - 1)
+       ! Periodic boundary conditions
+       if (periodic(idim)) then
+          if (hash_nbor(idim) <  box_ckey_min(idim, ilevel+1)) hash_nbor(idim) = box_ckey_max(idim, ilevel+1) - 1
+          if (hash_nbor(idim) >= box_ckey_max(idim, ilevel+1)) hash_nbor(idim) = box_ckey_min(idim, ilevel+1)
+       endif
+       ! If the neighbour cell does not exist, replace it by its father cell
+       call get_parent_cell_d(hash_nbor, hash_key, hash_val, hash_size, ckey_max, key_off, igridp, icellp)
+       if (igridp > 0 .and. igridp <= ngridmax) then
+          igridn(i_nbor) = igridp
+          icelln(i_nbor) = icellp
+          dxn(i_nbor) = dx
+       else
+          ! With 2:1 balance the father cell exists, as on the host
+          hash_nbor(0) = hash_nbor(0) - 1
+          hash_nbor(1:3) = hash_nbor(1:3) / 2
+          call get_parent_cell_d(hash_nbor, hash_key, hash_val, hash_size, ckey_max, key_off, igridp, icellp)
+          igridn(i_nbor) = igridp
+          icelln(i_nbor) = icellp
+          dxn(i_nbor) = 1.5*dx
+       endif
+    end do
+
+    ! Gather 3-velocity
+    do idim = 1, 3
+       icellg = icelln(2*idim-1)
+       icelld = icelln(2*idim  )
+       igridg = igridn(2*idim-1)
+       igridd = igridn(2*idim  )
+       do jdim = 1, 3
+          vg(idim,jdim) = uold(icellg,jdim+1,igridg)/uold(icellg,1,igridg)
+          vd(idim,jdim) = uold(icelld,jdim+1,igridd)/uold(icelld,1,igridd)
+       end do
+       dxg(idim) = dxn(2*idim-1)
+       dxd(idim) = dxn(2*idim  )
+    end do
+
+    ! Compute divu = Trace G
+    divu = 0.0_dp
+    do idim = 1, 3
+       divu = divu + (vd(idim,idim)-vg(idim,idim)) / (dxg(idim)+dxd(idim))
+    end do
+
+    ! Add -pdV term to non-thermal energies
+#if NENER>0
+    do irad = 1, nener
+       unew(ind,5+irad,igrid) = unew(ind,5+irad,igrid) &
+            & -(gamma_rad_d(irad)-1.0_dp)*uold(ind,5+irad,igrid)*divu*dt
+    end do
+#endif
+
+    ! Correct total energy if internal energy is too small
+    if (entropy .and. dual_energy .GE. 0) then
+       d = max(unew(ind,1,igrid), smallr)
+       u = unew(ind,2,igrid)/d
+       v = unew(ind,3,igrid)/d
+       w = unew(ind,4,igrid)/d
+       e_kin = 0.5_dp*d*(u**2+v**2+w**2)
+#if NENER>0
+       do irad = 1, nener
+          e_kin = e_kin+unew(ind,5+irad,igrid)
+       end do
+#endif
+       e_mag = 0.0_dp
+#ifdef MHD
+       bx = 0.5_dp*(bnew(ind,1,igrid)+bnew(ind,4,igrid))
+       by = 0.5_dp*(bnew(ind,2,igrid)+bnew(ind,5,igrid))
+       bz = 0.5_dp*(bnew(ind,3,igrid)+bnew(ind,6,igrid))
+       e_mag = 0.5_dp*(bx**2+by**2+bz**2)
+#endif
+       e_cons = unew(ind,5,igrid)-e_kin-e_mag
+       T2_cons = (gamma-1)*e_cons/d
+       e_prim = unew(ind,ientropy,igrid)*d**(gamma-1.0)/(gamma-1.0)
+       e_trunc = dual_energy*d*max(abs(divu)*dx,3.0_dp*hexp*dx)**2
+       if (e_cons < e_trunc .AND. T2_cons < T2_fix) then
+          unew(ind,5,igrid) = e_prim+e_kin+e_mag
+       else
+          unew(ind,ientropy,igrid) = e_cons/d**(gamma-1.0)*(gamma-1.0)
+       end if
+    end if
+
+    ! Add source terms for subgrid turbulence model
+    if (sgs_turb) then
+       ! Compute gradu = G
+       do idim = 1, 3
+          do jdim = 1, 3
+             gradu(idim,jdim) = (vd(idim,jdim)-vg(idim,jdim)) / (dxg(idim)+dxd(idim))
+          end do
+       end do
+
+       ! Compute 0.5*(gradu+gradu^T) = E
+       do idim = 1, 3
+          do jdim = 1, 3
+             E(idim,jdim) = 0.5*(gradu(idim,jdim)+gradu(jdim,idim))
+          end do
+       end do
+
+       ! Compute turbulent viscosity dissipation function
+       phi_diss = 0
+       do idim = 1, 3
+          do jdim = 1, 3
+             phi_diss = phi_diss+2.0*E(idim,jdim)**2
+          end do
+       end do
+       phi_diss = phi_diss-2.0/3.0*divu**2
+
+       ! Add -pdV term to subgrid turbulent energy
+       unew(ind,iturb,igrid) = unew(ind,iturb,igrid) &
+            & -(2.0/3.0)*uold(ind,iturb,igrid)*divu*dt
+
+       if (nstep_coarse == 0 .or. equilibrium_sgs) then
+          ! Set subgrid turbulent energy to equilibrium/stationary solution
+          ! Using C_s^4/2 so that sigma = C_s^2 * dx * |S| (traditional Smagorinsky)
+          unew(ind,iturb,igrid) = uold(ind,1,igrid)*dx**2*phi_diss &
+               & *0.5_dp*smagorinsky_lilly_constant**4
+       else
+          ! Implicit solution wrt to decay term only
+          d_old = max(uold(ind,1,igrid), smallr)
+          e_turb = uold(ind,iturb,igrid)
+          sigma = sqrt(max(2.0*e_turb/d_old, smallc**2))
+          unew(ind,iturb,igrid) = (unew(ind,iturb,igrid) &
+               &  +d_old*dx*sigma*phi_diss*dt &
+               &  *0.5_dp*smagorinsky_lilly_constant**4) &
+               & /(1.0+sigma/dx*dt)
+       end if
+
+    endif
+
+  end subroutine source_hydro_kernel
   ! =========================================================================
 
   ! =========================================================================

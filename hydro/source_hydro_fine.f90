@@ -1,4 +1,7 @@
 module source_hydro_fine_module
+#ifdef _CUDA
+  use gpu_runner, only: gpu_source_hydro
+#endif
 contains
 !################################################################
 !################################################################
@@ -28,7 +31,11 @@ recursive subroutine r_source_hydro_fine(pst,ilevel,input_size)
      call r_source_hydro_fine(pst%pLower,ilevel,input_size)
      call mdl_get_reply(pst%s%mdl,rID,0)
   else
+#ifdef _CUDA
+     call gpu_source_hydro(pst%s,ilevel)
+#else
      call source_hydro_fine(pst%s,ilevel)
+#endif
   endif
 
 end subroutine r_source_hydro_fine

@@ -40,6 +40,7 @@ recursive subroutine r_set_grid_device(pst)
 #ifdef GRAV
      f = pst%s%m%f
      phi = pst%s%m%phi
+     phi_old = pst%s%m%phi_old
 #endif
      call GPU_Error_Check(__FILE__, __LINE__)
      call nvtxEndRange()
@@ -168,6 +169,7 @@ recursive subroutine r_transfer_grid_host(pst)
 #ifdef GRAV
      pst%s%m%f = f
      pst%s%m%phi = phi
+     pst%s%m%phi_old = phi_old
 #endif
      call GPU_Error_Check(__FILE__, __LINE__)
      call nvtxEndRange()
