@@ -218,10 +218,15 @@ subroutine cic_kick_drift_part(s,p,ilevel,action_part)
            x(idim)=p%xp(ipart,idim)
         end do
 
-        ! Call analytical acceleration routine
-        xana(1,1:ndim)=x(1:ndim)
-        call gravana(r,g,xana,fana,dx_loc,1)
-        ff(1:ndim)=fana(1,1:ndim)
+        ! Without the Poisson solver, particles outside the box have no force
+        if(.not.r%poisson)then
+           ff(1:ndim)=0d0
+        else
+           ! Call analytical acceleration routine
+           xana(1,1:ndim)=x(1:ndim)
+           call gravana(r,g,xana,fana,dx_loc,1)
+           ff(1:ndim)=fana(1,1:ndim)
+        endif
 
         ! Perform kick, or drift, or both
         if(action_part==action_kick_drift)then
