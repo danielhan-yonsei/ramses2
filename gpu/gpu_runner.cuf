@@ -34,9 +34,29 @@ module gpu_runner
   real(kind=dp), device, allocatable, dimension(:,:,:) :: b_roll2, b_my0, b_y0, b_cf, eta_nimhd
   real(kind=dp), device, allocatable, dimension(:,:) :: e_acc, e_acc0
 
-  !> Arrays to hold Turbulent acceleration fields on the device
-  real(kind=8), device, allocatable, dimension(:,:,:,:) :: afield_last_d, afield_next_d, afield_now_d
+  !> Arrays to hold Turbulent acceleration fields and spectra on the device,
+  !> the last ones in slot iturb_last and the next ones in slot 3-iturb_last
+  real(kind=8), device, allocatable, dimension(:,:,:,:,:) :: afield_d
+  real(kind=8), device, allocatable, dimension(:,:,:,:) :: afield_now_d
+  complex(kind=8), device, allocatable, dimension(:,:,:,:,:) :: turb_spec_d
+  complex(kind=8), device, allocatable, dimension(:,:,:,:) :: turb_fft_d
   real(kind=dp), device, allocatable, dimension(:,:,:) :: fturb
+  integer :: iturb_last = 1
+  integer :: turb_fft_plan
+
+  !> Modes drawn by add_turbulence, in its loop order: flat cell index, own conjugate flag,
+  !> power and unit wavevector, with the random numbers of the next field (host and device)
+  integer :: turb_nmode = 0
+  integer(kind=4), device, allocatable, dimension(:) :: turb_mode_cell
+  logical, device, allocatable, dimension(:) :: turb_mode_own
+  real(kind=8), device, allocatable, dimension(:) :: turb_mode_power
+  real(kind=8), device, allocatable, dimension(:,:) :: turb_mode_unitk
+  real(kind=8), allocatable, dimension(:,:,:) :: turb_rnd_h
+  real(kind=8), device, allocatable, dimension(:,:,:) :: turb_rnd_d
+
+  !> Hermitian pairs set by add_turbulence: flat cell indices of the mode and of its partner
+  integer :: turb_npair = 0
+  integer(kind=4), device, allocatable, dimension(:,:) :: turb_pair_cell
 
   !> Arrays to hold the gravity variables on the device
   real(kind=dp), device, allocatable, dimension(:,:) :: phi, rho, nref, phi_old
@@ -443,8 +463,8 @@ contains
   !> Time-interpolate the turbulent acceleration field on the device.
   !>
   !> @detail
-  !> afield_now_d = next_tfrac*afield_last_d + last_tfrac*afield_next_d, computed from the
-  !> host turbulence times.
+  !> afield_now_d = next_tfrac*afield_last + last_tfrac*afield_next, from the two slots of
+  !> afield_d, computed from the host turbulence times.
   !>
   !> @param[in] sim : The simulation object
   !>
@@ -469,12 +489,108 @@ contains
     call nvtxStartRange("GPU turb_interp", color=0)!green
     ! Pass element references so the flattened (assumed-size) kernel dummies bind to the
     ! contiguous base address of each field.
-    call turb_interp_field_kernel<<<num_blocks, num_threads>>>(afield_last_d(1,0,0,0), &
-         & afield_next_d(1,0,0,0), afield_now_d(1,0,0,0), last_tfrac, next_tfrac, ntot)
+    call turb_interp_field_kernel<<<num_blocks, num_threads>>>(afield_d(1,0,0,0,iturb_last), &
+         & afield_d(1,0,0,0,3-iturb_last), afield_now_d(1,0,0,0), last_tfrac, next_tfrac, ntot)
     call GPU_Error_Check(__FILE__, __LINE__)
     call nvtxEndRange()
 
   end subroutine gpu_turb_interp
+
+  !> @brief
+  !> Advance the turbulent spectrum on the device, as add_turbulence and decay_turbulence.
+  !>
+  !> @detail
+  !> The new next spectrum goes to the slot of the last one: every mode decays, the drawn
+  !> modes add their noise from the host random numbers turb_rnd_h, the Hermitian pairs
+  !> copy their partners. The current next spectrum becomes the last one.
+  !>
+  !> @param[in] sim : The simulation object
+  !>
+  ! Written by Daniel Han (mini-ramses version October 2026).
+  subroutine gpu_turb_add_modes(sim)
+    use nvtx
+    use turb_device, only: turb_decay_kernel, turb_add_modes_kernel, turb_conjg_pairs_kernel
+    use turb_commons, only: TURB_GS
+    use ramses_commons, only: ramses_t
+    type(ramses_t), intent(inout)::sim
+
+    integer(kind=4) :: ntot, iold, inew
+    integer :: num_threads, num_blocks
+
+    iold = 3 - iturb_last
+    inew = iturb_last
+    ntot = ndim*TURB_GS**ndim
+    num_threads = 256
+
+    call nvtxStartRange("GPU turb_add_modes", color=0)!green
+    num_blocks = (ntot + num_threads - 1)/num_threads
+    call turb_decay_kernel<<<num_blocks, num_threads>>>(turb_spec_d, iold, inew, &
+         & sim%turb%turb_decay_frac, ntot)
+    if (turb_nmode > 0) then
+       turb_rnd_d = turb_rnd_h
+       num_blocks = (turb_nmode + num_threads - 1)/num_threads
+       call turb_add_modes_kernel<<<num_blocks, num_threads>>>(turb_spec_d, iold, inew, &
+            & turb_mode_cell, turb_mode_own, turb_mode_power, turb_mode_unitk, turb_rnd_d, &
+            & turb_nmode, sim%turb%turb_dt, sim%r%comp_frac, sim%turb%sol_frac, &
+            & sim%turb%turb_decay_frac)
+    endif
+    if (turb_npair > 0) then
+       num_blocks = (turb_npair + num_threads - 1)/num_threads
+       call turb_conjg_pairs_kernel<<<num_blocks, num_threads>>>(turb_spec_d, inew, &
+            & turb_pair_cell, turb_npair)
+    endif
+    call GPU_Error_Check(__FILE__, __LINE__)
+    call nvtxEndRange()
+
+    iturb_last = iold
+
+  end subroutine gpu_turb_add_modes
+
+  !> @brief
+  !> Transform the next turbulent spectrum into the next acceleration field on the device.
+  !>
+  !> @detail
+  !> As FFT_3D and turb_next_field on the host: backward FFT of each component, real part
+  !> divided by TURB_GS**3, times turb_norm*turb_rms.
+  !>
+  !> @param[in] sim : The simulation object
+  !>
+  ! Written by Daniel Han (mini-ramses version October 2026).
+  subroutine gpu_turb_transform(sim)
+    use nvtx
+#ifdef TURB
+    use cufft, only: cufftExecZ2Z, CUFFT_INVERSE, CUFFT_SUCCESS
+#endif
+    use turb_device, only: turb_normalise_kernel
+    use turb_commons, only: TURB_GS
+    use ramses_commons, only: ramses_t
+    type(ramses_t), intent(inout)::sim
+
+    integer(kind=4) :: ntot
+    integer :: inext, num_threads, num_blocks
+#ifdef TURB
+    integer :: istat
+#endif
+
+    inext = 3 - iturb_last
+    ntot = ndim*TURB_GS**ndim
+    num_threads = 256
+    num_blocks = (ntot + num_threads - 1)/num_threads
+
+    call nvtxStartRange("GPU turb_transform", color=0)!green
+#ifdef TURB
+    istat = cufftExecZ2Z(turb_fft_plan, turb_spec_d(1,0,0,0,inext), turb_fft_d, CUFFT_INVERSE)
+    if (istat /= CUFFT_SUCCESS) then
+       write(*,*)'Error: gpu_turb_transform: cufftExecZ2Z failed with status ',istat
+       error stop
+    endif
+#endif
+    call turb_normalise_kernel<<<num_blocks, num_threads>>>(turb_fft_d(1,0,0,0), &
+         & afield_d(1,0,0,0,inext), sim%turb%turb_norm, sim%r%turb_rms, ntot)
+    call GPU_Error_Check(__FILE__, __LINE__)
+    call nvtxEndRange()
+
+  end subroutine gpu_turb_transform
 
   !> @brief
   !> Compute the turbulent driving force on a level, filling fturb.
