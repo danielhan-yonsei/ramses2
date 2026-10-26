@@ -443,6 +443,7 @@ subroutine init_refine_ramses(s,ilevel,ncpu_file,levelmin_file,nlevelmax_file,no
         close(11)
      endif
   end do
+  m%ifree=m%noct_used+1
 
   if(r%hydro)then
      ! Compute initial magnetic field
