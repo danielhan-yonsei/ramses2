@@ -2576,7 +2576,7 @@ subroutine particle_peak_id(s,p)
 
         ! Find parent cell at level ilevel
         do idim=1,ndim
-           ckey(idim)=int(p%xp(ipart,idim)/dx_loc)
+           ckey(idim)=int((p%xp(ipart,idim)+m%skip(idim))/dx_loc)
         end do
 
         ! Get parent cell at level ilevel using cache
@@ -2657,7 +2657,7 @@ subroutine particle_halo_id(s,p)
 
         ! Find parent cell at level ilevel
         do idim=1,ndim
-           ckey(idim)=int(p%xp(ipart,idim)/dx_loc)
+           ckey(idim)=int((p%xp(ipart,idim)+m%skip(idim))/dx_loc)
         end do
 
         ! Get parent cell at level ilevel using cache
