@@ -162,7 +162,8 @@ subroutine multigrid(pst,ilevel,icount)
 !!$        call r_cmp_residual_norm2(pst,ilevel,1,i_res_norm2,2)
 !!$     end if
 
-     if(ilevel>1) then
+     ! Recurse only if a coarser multigrid level exists
+     if(ilevel>pst%s%g%levelmin_mg) then
 
         ! Restrict residual to coarser level
         call r_restrict_residual(pst,double_level,storage_size(double_level)/32)
