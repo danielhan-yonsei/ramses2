@@ -9,6 +9,7 @@ The three namelist blocks `&SINK_PARAMS`, `&SINK_ACCRETION_PARAMS` and `&SINK_FE
 | `nsinktot`                 | `integer(8)` | 0             | Total maximum number of sink particles across all MPI processes.                                   |
 | `rho_type_sink`            | `integer`    | 1             | Fluid used to build the density field for sink formation (1: DM, 2: stars, 3: sinks, 4: gas).      |
 | `sink_form`                | `logical`    | `.false.`     | Activate sink particle formation.                                                                  |
+| `nstep_per_sink`           | `integer`    | 1             | Call sink formation every `nstep_per_sink` coarse steps.                                          |
 | `sink_merge`               | `logical`    | `.false.`     | Activate sink-sink merging.                                                                        |
 | `sink_dump`                | `logical`    | `.false.`     | Dump sink particle data on the fly (in `dump/`).                                                   |
 | `sink_delta_tout`          | `real`       | 0             | Time interval (in Myr) between successive high-frequency sink dumps in `sinklog/`.                         |

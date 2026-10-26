@@ -398,7 +398,7 @@ module amr_commons
      logical::output_peak_trac=.false.
      logical::output_peak_dust=.false.
      integer::rho_type_clump=1
-     integer::nsteps_per_tree=1
+     integer::nstep_per_tree=1
      real(kind=8)::relevance_threshold=2
      real(kind=8)::density_threshold=-1
      real(kind=8)::saddle_threshold=-1
@@ -456,6 +456,7 @@ module amr_commons
      real(kind=8)::sink_mseed
      real(kind=8)::core_seed_mass=0d0 ! in Msun; 0: no seed mass
      logical::sink_form=.false.
+     integer::nstep_per_sink=1
      logical::core_form=.false.
      logical::core_to_star=.false.
      logical::core_refine=.false.

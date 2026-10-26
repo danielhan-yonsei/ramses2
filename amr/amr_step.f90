@@ -109,7 +109,7 @@ recursive subroutine m_amr_step(pst,ilevel,icount,done)
   !-------------------------
   ! Sink formation in clumps
   !-------------------------
-  if(r%sink.and.ilevel==r%levelmin.and.r%sink_form)then
+  if(r%sink.and.ilevel==r%levelmin.and.r%sink_form.and.mod(g%nstep_coarse,r%nstep_per_sink)==0)then
      call m_timer('sink - formation','start')
      call m_sink_formation(pst)
   endif
@@ -117,7 +117,7 @@ recursive subroutine m_amr_step(pst,ilevel,icount,done)
   !---------------------------------------
   ! Merging tree tracer particle formation
   !---------------------------------------
-  if(r%tree.and.ilevel==r%levelmin.and.mod(g%nstep_coarse, r%nsteps_per_tree)==0)then
+  if(r%tree.and.ilevel==r%levelmin.and.mod(g%nstep_coarse, r%nstep_per_tree)==0)then
      call m_timer('tree - formation','start')
      call m_tree_formation(pst)
   endif
