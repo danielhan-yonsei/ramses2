@@ -171,6 +171,7 @@ subroutine cic_kick_drift_part(s,p,ilevel,action_part)
   use nbors_utils
   use cache_commons
   use cache
+  use boundaries, only: init_bound_grav
   implicit none
   type(ramses_t)::s
   type(part_t)::p
@@ -218,10 +219,15 @@ subroutine cic_kick_drift_part(s,p,ilevel,action_part)
            x(idim)=p%xp(ipart,idim)
         end do
 
-        ! Call analytical acceleration routine
-        xana(1,1:ndim)=x(1:ndim)
-        call gravana(r,g,xana,fana,dx_loc,1)
-        ff(1:ndim)=fana(1,1:ndim)
+        ! Without the Poisson solver, particles outside the box have no force
+        if(.not.r%poisson)then
+           ff(1:ndim)=0d0
+        else
+           ! Call analytical acceleration routine
+           xana(1,1:ndim)=x(1:ndim)
+           call gravana(r,g,xana,fana,dx_loc,1)
+           ff(1:ndim)=fana(1,1:ndim)
+        endif
 
         ! Perform kick, or drift, or both
         if(action_part==action_kick_drift)then
@@ -252,7 +258,7 @@ subroutine cic_kick_drift_part(s,p,ilevel,action_part)
 
   ! Open read-only cache
   call open_cache(mdl, m, pack_size=storage_size(dummy_three_realdp)/32, &
-       pack=pack_fetch_kick, unpack=unpack_fetch_kick)
+       pack=pack_fetch_kick, unpack=unpack_fetch_kick, bound=init_bound_grav)
 
   ! Loop over particles
   do ipart=p%headp(ilevel),p%tailp(ilevel)
@@ -453,6 +459,7 @@ subroutine tsc_kick_drift_part(s,p,ilevel,action_part)
   use nbors_utils
   use cache_commons
   use cache
+  use boundaries, only: init_bound_grav
   implicit none
   type(ramses_t)::s
   type(part_t)::p
@@ -489,7 +496,7 @@ subroutine tsc_kick_drift_part(s,p,ilevel,action_part)
 
   ! Open read-only cache
   call open_cache(mdl, m, pack_size=storage_size(dummy_three_realdp)/32, &
-       pack=pack_fetch_kick, unpack=unpack_fetch_kick)
+       pack=pack_fetch_kick, unpack=unpack_fetch_kick, bound=init_bound_grav)
 
   ! Loop over particles
   do ipart=p%headp(ilevel),p%tailp(ilevel)
@@ -633,6 +640,7 @@ subroutine pcs_kick_drift_part(s,p,ilevel,action_part)
   use nbors_utils
   use cache_commons
   use cache
+  use boundaries, only: init_bound_grav
   implicit none
   type(ramses_t)::s
   type(part_t)::p
@@ -669,7 +677,7 @@ subroutine pcs_kick_drift_part(s,p,ilevel,action_part)
 
   ! Open read-only cache
   call open_cache(mdl, m, pack_size=storage_size(dummy_three_realdp)/32, &
-       pack=pack_fetch_kick, unpack=unpack_fetch_kick)
+       pack=pack_fetch_kick, unpack=unpack_fetch_kick, bound=init_bound_grav)
 
   ! Loop over particles
   do ipart=p%headp(ilevel),p%tailp(ilevel)

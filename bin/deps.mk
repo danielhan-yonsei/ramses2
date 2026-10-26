@@ -89,7 +89,7 @@ lightcone_utils.o: amr_commons.o
 load_balance.o: amr_commons.o amr_parameters.o cache.o cache_commons.o cr_parameters.o domain_hilbert.o hash.o hilbert.o hydro_parameters.o init_refine_basegrid.o marshal.o mdl.o mdl_commons.o nbors_utils.o oct_commons.o pm_commons.o pm_parameters.o ramses_commons.o rho_fine.o rt_parameters.o
 marshal.o: amr_commons.o amr_parameters.o cache_commons.o cr_parameters.o hydro_parameters.o rt_parameters.o
 mdl.o: amr_commons.o amr_parameters.o clfind_commons.o mdl_commons.o
-move_fine.o: amr_commons.o amr_parameters.o cache.o cache_commons.o cr_parameters.o hydro_parameters.o mdl.o mdl_commons.o nbors_utils.o pm_commons.o pm_parameters.o ramses_commons.o rho_fine.o rngstream.o rt_parameters.o
+move_fine.o: amr_commons.o amr_parameters.o boundaries.o cache.o cache_commons.o cr_parameters.o hydro_parameters.o mdl.o mdl_commons.o nbors_utils.o pm_commons.o pm_parameters.o ramses_commons.o rho_fine.o rngstream.o rt_parameters.o
 movie.o: amr_commons.o amr_parameters.o hilbert.o hydro_parameters.o mdl.o mdl_commons.o output_amr.o pm_commons.o ramses_commons.o rt_parameters.o
 nbors_utils.o: amr_commons.o amr_parameters.o boundaries.o cache_commons.o hash.o hilbert.o hydro_parameters.o mdl.o ramses_commons.o
 neq_cooling_module.o: amr_commons.o amr_parameters.o constants.o coolrates_module.o hydro_parameters.o rt_parameters.o

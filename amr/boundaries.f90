@@ -563,6 +563,12 @@ subroutine init_bound_grav(r,g,m,igrid,igrid_ref,ibound)
 
 #ifdef GRAV
 
+  ! Without the Poisson solver, boundary grids have no force
+  if(.not.r%poisson)then
+     m%f(1:twotondim,1:ndim,igrid)=0d0
+     return
+  endif
+
   ! Mesh size at level ilevel in code units
   dx=r%boxlen/2**m%grid(igrid)%lev
 
