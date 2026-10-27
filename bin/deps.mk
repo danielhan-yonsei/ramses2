@@ -95,16 +95,17 @@ nbors_utils.o: amr_commons.o amr_parameters.o boundaries.o cache_commons.o hash.
 neq_cooling_module.o: amr_commons.o amr_parameters.o constants.o coolrates_module.o hydro_parameters.o rt_parameters.o
 newdt_fine.o: amr_commons.o amr_parameters.o constants.o courant_fine.o cr_init_flow_fine.o mdl.o mdl_commons.o pm_commons.o pm_parameters.o ramses_commons.o
 oct_commons.o: amr_parameters.o
-output_amr.o: amr_commons.o amr_parameters.o cooling_module.o gadgetreadfile.o hydro_commons.o mdl.o mdl_commons.o output_cr.o output_hydro.o output_part.o output_poisson.o output_rt.o pm_commons.o ramses_commons.o turb_commons.o
-output_clump.o: amr_commons.o amr_parameters.o clfind_commons.o clump_merger.o mdl.o mdl_commons.o pm_commons.o ramses_commons.o
-output_cr.o: amr_commons.o amr_parameters.o constants.o cr_parameters.o mdl.o mdl_commons.o ramses_commons.o
-output_hydro.o: amr_commons.o amr_parameters.o hydro_parameters.o mdl.o mdl_commons.o ramses_commons.o
-output_part.o: amr_commons.o amr_parameters.o mdl.o mdl_commons.o pm_commons.o ramses_commons.o
-output_poisson.o: amr_commons.o amr_parameters.o hydro_parameters.o mdl.o mdl_commons.o ramses_commons.o
-output_rt.o: amr_commons.o amr_parameters.o constants.o hydro_parameters.o mdl.o mdl_commons.o ramses_commons.o rt_parameters.o
+output_amr.o: amr_commons.o amr_parameters.o cooling_module.o gadgetreadfile.o hydro_commons.o mdl.o mdl_commons.o output_cr.o output_hydro.o output_part.o output_poisson.o output_rt.o pm_commons.o posix_io.o ramses_commons.o turb_commons.o
+output_clump.o: amr_commons.o amr_parameters.o clfind_commons.o clump_merger.o mdl.o mdl_commons.o pm_commons.o posix_io.o ramses_commons.o
+output_cr.o: amr_commons.o amr_parameters.o constants.o cr_parameters.o mdl.o mdl_commons.o posix_io.o ramses_commons.o
+output_hydro.o: amr_commons.o amr_parameters.o hydro_parameters.o mdl.o mdl_commons.o posix_io.o ramses_commons.o
+output_part.o: amr_commons.o amr_parameters.o mdl.o mdl_commons.o pm_commons.o posix_io.o ramses_commons.o
+output_poisson.o: amr_commons.o amr_parameters.o hydro_parameters.o mdl.o mdl_commons.o posix_io.o ramses_commons.o
+output_rt.o: amr_commons.o amr_parameters.o constants.o hydro_parameters.o mdl.o mdl_commons.o posix_io.o ramses_commons.o rt_parameters.o
 phi_fine_cg.o: multigrid_fine_coarse.o
 pm_commons.o: amr_parameters.o
 poisson_flag.o: amr_commons.o amr_parameters.o hash.o hydro_parameters.o ramses_commons.o
+posix_io.o: amr_parameters.o
 ramses_commons.o: amr_commons.o amr_parameters.o clfind_commons.o cooling_module.o coolrates_module.o cr_parameters.o hydro_parameters.o mdl.o pm_commons.o rt_parameters.o rt_spectra.o turb_commons.o
 read_cr_params.o: amr_parameters.o constants.o cr_parameters.o hydro_parameters.o mdl.o movie.o ramses_commons.o
 read_params.o: amr_commons.o amr_parameters.o constants.o cr_parameters.o hydro_parameters.o mdl.o mdl_commons.o movie.o ramses_commons.o read_cr_params.o read_rt_params.o rt_parameters.o
