@@ -19,8 +19,6 @@ Two different Poisson solvers are available in RAMSES: conjugate gradient (CG) a
 
 Each particle family has its own scheme for depositing mass onto the grid (which builds the right hand side of the Poisson equation) and for interpolating the gravitational force back to the particles. The families are dark matter (`part_*`), stars (`star_*`), sinks (`sink_*`) and tree particles (`tree_*`). The schemes are 1 = Cloud-In-Cell (CIC), 2 = Triangular-Shaped Cloud (TSC) and 3 = Piecewise Cubic Spline (PCS). Other values switch off the deposition or the interpolation of that family.
 
-These schemes only apply to CPU runs. GPU builds (`COMPILER=NVHPC` with data on the device) always deposit mass and interpolate forces with CIC, and the `*_dep_algo` parameters then select the CIC deposit kernel. With `COMPILER=METAL`, only dark matter mass deposition runs on the device, with the medium kernel (`part_dep_algo=2`).
-
 | Variable name | Fortran type | Default value  | Description      |
 |:------------------- |:-------|:----- |:------------------------- |
 | `part_mass_deposition_scheme`     | `integer` | 1 | Mass deposition scheme for dark matter particles (1 = CIC, 2 = TSC, 3 = PCS). |
