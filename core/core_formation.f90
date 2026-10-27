@@ -473,7 +473,7 @@ end subroutine core_formation
 !###########################################################
 !###########################################################
 subroutine core_debit_host_cell(r,m,ilevel,igrid,ind,mseed_core,z_init,u_init)
-  use amr_parameters, only: ndim
+  use amr_parameters, only: ndim, dp
   use hydro_parameters, only: nvar, nener
   use amr_commons, only: run_t, mesh_t
   implicit none
@@ -481,7 +481,7 @@ subroutine core_debit_host_cell(r,m,ilevel,igrid,ind,mseed_core,z_init,u_init)
   type(mesh_t)::m
   integer,intent(in)::ilevel,igrid,ind
   real(kind=8),intent(in)::mseed_core
-  real(kind=8),intent(out)::z_init,u_init
+  real(dp),intent(out)::z_init,u_init
   !------------------------------------------------------------------
   ! Remove the seed mass from the host cell, keeping velocity and specific
   ! thermal energy. Return the cell metallicity and thermal energy.
@@ -501,7 +501,7 @@ subroutine core_debit_host_cell(r,m,ilevel,igrid,ind,mseed_core,z_init,u_init)
 
   dx=r%boxlen/2d0**ilevel
   vol_loc=dx**ndim
-  d=max(m%uold(ind,1,igrid),r%smallr)
+  d=max(real(m%uold(ind,1,igrid),kind=8),r%smallr)
   delta_d=mseed_core/vol_loc
   dnew=d-delta_d
   vv(1:ndim)=m%uold(ind,2:ndim+1,igrid)/d
@@ -848,7 +848,7 @@ subroutine compute_core_clump_criteria(s,rtype)
      vol=dx_loc**ndim
      xpeak(1:ndim)=c%peak_pos(peak_nr,1:ndim)
      call core_clump_cell_position(r,m,igrid,ind,dx_loc,xpeak,xcell)
-     d=max(m%uold(ind,1,igrid),r%smallr)
+     d=max(real(m%uold(ind,1,igrid),kind=8),r%smallr)
      vel(1:ndim)=m%uold(ind,2:ndim+1,igrid)/d
      gas_mass(peak_nr)=gas_mass(peak_nr)+d*vol
      gas_com(peak_nr,1:ndim)=gas_com(peak_nr,1:ndim)+d*vol*xcell(1:ndim)
@@ -890,7 +890,7 @@ subroutine compute_core_clump_criteria(s,rtype)
      vol=dx_loc**ndim
      xpeak(1:ndim)=c%peak_pos(peak_nr,1:ndim)
      call core_clump_cell_position(r,m,igrid,ind,dx_loc,xpeak,xcell)
-     d=max(m%uold(ind,1,igrid),r%smallr)
+     d=max(real(m%uold(ind,1,igrid),kind=8),r%smallr)
      vel(1:ndim)=m%uold(ind,2:ndim+1,igrid)/d
      etot=m%uold(ind,5,igrid)
      ekin=0d0
