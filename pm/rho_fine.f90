@@ -5,9 +5,10 @@ module rho_fine_module
   use part_device, only: gpu_split_part, gpu_sort_part, gpu_cic_part_large, gpu_cic_part_medium, gpu_cic_part_small
   use part_device, only: gpu_split_star, gpu_sort_star, gpu_cic_star_large, gpu_cic_star_medium, gpu_cic_star_small
   use part_device, only: gpu_split_sink, gpu_sort_sink, gpu_cic_sink_large, gpu_cic_sink_medium, gpu_cic_sink_small
+  use part_device, only: gpu_bspline_part, gpu_bspline_star, gpu_bspline_sink
   use part_device, only: gpu_split_tree, gpu_sort_tree
 #ifdef CORE
-  use part_device, only: gpu_split_core, gpu_sort_core, gpu_cic_core_large
+  use part_device, only: gpu_split_core, gpu_sort_core, gpu_cic_core_large, gpu_bspline_core
 #endif
 #endif
 #ifdef _METAL
@@ -706,7 +707,9 @@ recursive subroutine r_cic_part(pst,input_array,input_size)
 #ifdef _CUDA
      if(pst%s%m%data_on_device)then
         if(pst%s%r%part)then
-           if(pst%s%r%part_dep_algo==2)then
+           if(pst%s%r%part_mass_deposition_scheme>1)then
+              call gpu_bspline_part(pst%s, ilevel, rtype, pst%s%r%part_mass_deposition_scheme+1)
+           else if(pst%s%r%part_dep_algo==2)then
               call gpu_cic_part_medium(pst%s, ilevel, rtype)
            else if(pst%s%r%part_dep_algo==3)then
               call gpu_cic_part_small(pst%s, ilevel, rtype)
@@ -716,7 +719,9 @@ recursive subroutine r_cic_part(pst,input_array,input_size)
            call gpu_check_nan(pst%s, ilevel, 'DM deposition')
         endif
         if(pst%s%r%star)then
-           if(pst%s%r%star_dep_algo==2)then
+           if(pst%s%r%star_mass_deposition_scheme>1)then
+              call gpu_bspline_star(pst%s, ilevel, rtype, pst%s%r%star_mass_deposition_scheme+1)
+           else if(pst%s%r%star_dep_algo==2)then
               call gpu_cic_star_medium(pst%s, ilevel, rtype)
            else if(pst%s%r%star_dep_algo==3)then
               call gpu_cic_star_small(pst%s, ilevel, rtype)
@@ -726,7 +731,9 @@ recursive subroutine r_cic_part(pst,input_array,input_size)
            call gpu_check_nan(pst%s, ilevel, 'star deposition')
         endif
         if(pst%s%r%sink)then
-           if(pst%s%r%sink_dep_algo==2)then
+           if(pst%s%r%sink_mass_deposition_scheme>1)then
+              call gpu_bspline_sink(pst%s, ilevel, rtype, pst%s%r%sink_mass_deposition_scheme+1)
+           else if(pst%s%r%sink_dep_algo==2)then
               call gpu_cic_sink_medium(pst%s, ilevel, rtype)
            else if(pst%s%r%sink_dep_algo==3)then
               call gpu_cic_sink_small(pst%s, ilevel, rtype)
@@ -735,7 +742,13 @@ recursive subroutine r_cic_part(pst,input_array,input_size)
            endif
         endif
 #ifdef CORE
-        if(pst%s%r%core)call gpu_cic_core_large(pst%s, ilevel, rtype)
+        if(pst%s%r%core)then
+           if(pst%s%r%sink_mass_deposition_scheme>1)then
+              call gpu_bspline_core(pst%s, ilevel, rtype, pst%s%r%sink_mass_deposition_scheme+1)
+           else
+              call gpu_cic_core_large(pst%s, ilevel, rtype)
+           endif
+        endif
 #endif
         return
      endif

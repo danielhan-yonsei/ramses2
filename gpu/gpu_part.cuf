@@ -4,6 +4,7 @@ module part_device
   use oct_commons, only: oct
   use gpu_utils
   use cudafor
+  use sink_device, only: sink_bspline_device
   use gpu_runner, only: &
        & grid, hash_key, hash_val, ckey_max, key_off, &
        & box_ckey_min, box_ckey_max, box_size, periodic, &
@@ -3428,6 +3429,370 @@ subroutine gpu_cic_sink_small(sim, ilevel, rtype)
   call nvtxEndRange()
 
 end subroutine gpu_cic_sink_small
+
+!################################################################
+!  GPU TSC/PCS deposit (part/star/sink_mass_deposition_scheme = 2, 3)
+!################################################################
+!
+!> Direct TSC/PCS mass deposit at level ilevel (order 3 or 4).
+!>
+!> One thread per particle in sortp(head_idx..head_idx+num_parts-1); each thread
+!> loops over its order**3 stencil cells and atomically adds its contribution
+!> to rho and nref. Cell keys, weights and periodic wrap come from
+!> sink_bspline_device, which mirrors host tsc_part/pcs_part; the nref rules
+!> also follow the host.
+!> High order kernels are meant for the few sink/core particles, so there is no
+!> sort-based reduction and the deposit does not depend on *_dep_algo. A target
+!> cell whose parent oct is absent is skipped, as in the CIC deposit kernels.
+attributes(global) subroutine bspline_part_kernel(sortp_d, &
+     & head_idx, num_parts, &
+     & hash_key_d, hash_val_d, hash_size_d, ckey_max_d, key_off_d, &
+     & box_ckey_min_d, box_ckey_max_d, periodic_d, &
+     & xp_d, mp_d, rho_d, nref_d, &
+     & skip1, skip2, skip3, dx_loc, vol_loc, mass_sph, star, &
+     & m_refine_at_level, mass_cut_refine, order, ilevel, leading)
+  logical, intent(in), value :: star
+  integer(kind=4), intent(in), value :: head_idx, num_parts, order, ilevel
+  integer(kind=8), intent(in), value :: leading
+  integer(kind=4), device :: sortp_d(*)
+  integer(kind=8), device :: hash_key_d(*)
+  integer(kind=4), device :: hash_val_d(*)
+  integer(kind=4), intent(in), value :: hash_size_d
+  integer(kind=4), device :: ckey_max_d(*)
+  integer(kind=8), device :: key_off_d(*)
+  integer(kind=4), device :: box_ckey_min_d(1:3, *)
+  integer(kind=4), device :: box_ckey_max_d(1:3, *)
+  logical,         device :: periodic_d(1:3)
+  real(kind=dp),   device :: xp_d(*)
+  real(kind=dp),   device :: mp_d(*)
+  real(kind=dp),   device :: rho_d (1:twotondim, *)
+  real(kind=dp),   device :: nref_d(1:twotondim, *)
+  real(kind=dp), intent(in), value :: skip1, skip2, skip3, dx_loc, vol_loc
+  real(kind=dp), intent(in), value :: m_refine_at_level, mass_cut_refine
+  real(kind=dp), intent(in), value :: mass_sph
+
+  integer :: thread_idx, block_idx, idx, ipart, idim, j, igrid, icell, info
+  integer(kind=4) :: ckey(1:3), father_ckey(1:3), ii(1:3)
+  integer(kind=8) :: nx, hkey_offset, key, ix8, iy8, iz8
+  real(kind=dp) :: x(1:3), xnei(1:3), w, mp_i, my_nref
+
+  thread_idx = threadIdx%x - 1
+  block_idx  = blockIdx%x  - 1
+  idx = thread_idx + block_idx * blockDim%x
+  if (idx >= num_parts) return
+  ipart = sortp_d(head_idx + idx)
+  mp_i  = mp_d(ipart)
+
+  ! Hash geometry at level ilevel (grid(:) stores the parent octs there).
+  nx          = int(ckey_max_d(ilevel), kind=8)
+  hkey_offset = key_off_d(ilevel)
+
+  ! Particle position in units of dx at level ilevel (the GPU runs in 3D only).
+  x(1) = (xp_d(ipart            ) + skip1) / dx_loc
+  x(2) = (xp_d(ipart +   leading) + skip2) / dx_loc
+  x(3) = (xp_d(ipart + 2*leading) + skip3) / dx_loc
+
+  ! Stencil loop over the order**3 cells.
+  do j = 0, order**3 - 1
+     call sink_bspline_device(order, x, j, box_ckey_min_d, box_ckey_max_d, periodic_d, &
+          & ilevel, ckey, xnei, w)
+
+     ! Parent oct of the target cell; skip the cell if the oct is absent.
+     father_ckey = ckey / 2
+     ii = ckey - 2 * father_ckey
+     icell = 1
+     do idim = 1, ndim
+        icell = icell + ii(idim) * (2**(idim-1))
+     end do
+     ix8 = int(father_ckey(1), kind=8)
+     iy8 = int(father_ckey(2), kind=8)
+     iz8 = int(father_ckey(3), kind=8)
+     key = hkey_offset + ix8 + iy8*nx + iz8*nx*nx
+     igrid = hash_get(hash_key_d, hash_val_d, hash_size_d, key)
+     if (igrid == 0) cycle
+
+     info = atomicadd(rho_d(icell, igrid), mp_i * w / vol_loc)
+     if (m_refine_at_level >= 0.0_dp) then
+        my_nref = 0.0_dp
+        if (.not. star) then
+           ! nref follows the host refinement gate: either all masses count
+           ! (mass_cut_refine <= 0), or only particles below mass_cut_refine.
+           if (mass_cut_refine > 0.0_dp) then
+              if (mp_i < mass_cut_refine) then
+                 my_nref = w
+              endif
+           else
+              my_nref = w
+           endif
+        else
+           my_nref = mp_i * w / mass_sph
+        endif
+        if (my_nref /= 0.0_dp) then
+           info = atomicadd(nref_d(icell, igrid), my_nref)
+        endif
+     endif
+  end do
+
+end subroutine bspline_part_kernel
+
+!> Host dispatcher for the GPU TSC/PCS deposit of dark matter particles at
+!> level ilevel (order = part_mass_deposition_scheme + 1). Same structure as
+!> gpu_cic_part_large: multipole on the coarsest level, then one deposit launch.
+subroutine gpu_bspline_part(sim, ilevel, rtype, order)
+  use nvtx
+  use ramses_commons, only: ramses_t
+  type(ramses_t), intent(inout) :: sim
+  integer, intent(in) :: ilevel
+  integer, intent(in) :: rtype
+  integer, intent(in) :: order
+
+  integer(kind=4) :: head_idx, tail_idx, num_parts
+  integer :: num_threads, num_blocks, idim
+  real(kind=8) :: dx_loc, vol_loc
+  real(kind=8) :: q_h(1:ndim+1)
+  real(kind=8), device :: q_d(1:ndim+1)
+
+  ! If not ALL and not DM return
+  if (rtype /= 0 .and. rtype /= 1) return
+
+  ! Coarsest level: accumulate global monopole and dipole.
+  if (ilevel == sim%r%levelmin .and. sim%p%npart > 0) then
+
+     num_threads = 256
+     num_blocks  = (sim%p%npart + num_threads - 1) / num_threads
+
+     q_d = 0.0_dp
+     call nvtxStartRange("gpu_bspline_part:multipole", color=4)
+     call multipole_q_kernel<<<num_blocks, num_threads>>>(xp, mp, q_d, &
+          & 1, sim%p%npart, int(sim%r%npartmax,8))
+     call nvtxEndRange()
+     q_h = q_d
+
+     do idim = 1, ndim+1
+        sim%g%multipole%q(idim) = sim%g%multipole%q(idim) + q_h(idim)
+     end do
+
+  endif
+
+  ! Particle index range for the deposit: everything at or below ilevel.
+  head_idx = sim%p%headp(ilevel)
+  tail_idx = sim%p%tailp(sim%r%nlevelmax)
+  num_parts = tail_idx - head_idx + 1
+
+  if (num_parts <= 0) return
+
+  dx_loc  = sim%r%boxlen/2**ilevel
+  vol_loc = dx_loc**ndim
+
+  num_threads = 256
+  num_blocks  = (num_parts + num_threads - 1) / num_threads
+  call nvtxStartRange("gpu_bspline_part:deposit", color=4)
+  call bspline_part_kernel<<<num_blocks, num_threads>>>(&
+       & sortp, head_idx, num_parts, &
+       & hash_key, hash_val, sim%m%hash_size, ckey_max, key_off, &
+       & box_ckey_min, box_ckey_max, periodic, &
+       & xp, mp, rho, nref, &
+       & real(sim%m%skip(1),kind=dp), real(sim%m%skip(2),kind=dp), real(sim%m%skip(3),kind=dp), &
+       & real(dx_loc,kind=dp), real(vol_loc,kind=dp), 1.0_dp, .false., &
+       & real(sim%r%m_refine(ilevel),kind=dp), real(sim%r%mass_cut_refine,kind=dp), &
+       & order, ilevel, int(sim%r%npartmax,8))
+  call nvtxEndRange()
+
+end subroutine gpu_bspline_part
+
+!> Host dispatcher for the GPU TSC/PCS deposit of star particles
+!> (order = star_mass_deposition_scheme + 1).
+subroutine gpu_bspline_star(sim, ilevel, rtype, order)
+  use nvtx
+  use ramses_commons, only: ramses_t
+  type(ramses_t), intent(inout) :: sim
+  integer, intent(in) :: ilevel
+  integer, intent(in) :: rtype
+  integer, intent(in) :: order
+
+  integer(kind=4) :: head_idx, tail_idx, num_parts
+  integer :: num_threads, num_blocks, idim
+  real(kind=8) :: dx_loc, vol_loc
+  real(kind=8) :: q_h(1:ndim+1)
+  real(kind=8), device :: q_d(1:ndim+1)
+
+  ! If not ALL and not STAR return
+  if (rtype /= 0 .and. rtype /= 2) return
+
+  ! Coarsest level: accumulate global monopole and dipole.
+  if (ilevel == sim%r%levelmin .and. sim%star%npart > 0) then
+
+     num_threads = 256
+     num_blocks  = (sim%star%npart + num_threads - 1) / num_threads
+
+     q_d = 0.0_dp
+     call nvtxStartRange("gpu_bspline_star:multipole", color=4)
+     call multipole_q_kernel<<<num_blocks, num_threads>>>(star_xp, star_mp, q_d, &
+          & 1, sim%star%npart, int(sim%r%nstarmax,8))
+     call nvtxEndRange()
+     q_h = q_d
+
+     do idim = 1, ndim+1
+        sim%g%multipole%q(idim) = sim%g%multipole%q(idim) + q_h(idim)
+     end do
+
+  endif
+
+  ! Particle index range for the deposit: everything at or below ilevel.
+  head_idx = sim%star%headp(ilevel)
+  tail_idx = sim%star%tailp(sim%r%nlevelmax)
+  num_parts = tail_idx - head_idx + 1
+
+  if (num_parts <= 0) return
+
+  dx_loc  = sim%r%boxlen/2**ilevel
+  vol_loc = dx_loc**ndim
+
+  num_threads = 256
+  num_blocks  = (num_parts + num_threads - 1) / num_threads
+  call nvtxStartRange("gpu_bspline_star:deposit", color=4)
+  call bspline_part_kernel<<<num_blocks, num_threads>>>(&
+       & star_sortp, head_idx, num_parts, &
+       & hash_key, hash_val, sim%m%hash_size, ckey_max, key_off, &
+       & box_ckey_min, box_ckey_max, periodic, &
+       & star_xp, star_mp, rho, nref, &
+       & real(sim%m%skip(1),kind=dp), real(sim%m%skip(2),kind=dp), real(sim%m%skip(3),kind=dp), &
+       & real(dx_loc,kind=dp), real(vol_loc,kind=dp), real(sim%r%mass_sph,kind=dp), .true., &
+       & real(sim%r%m_refine(ilevel),kind=dp), real(sim%r%mass_cut_refine,kind=dp), &
+       & order, ilevel, int(sim%r%nstarmax,8))
+  call nvtxEndRange()
+
+end subroutine gpu_bspline_star
+
+!> Host dispatcher for the GPU TSC/PCS deposit of sink particles
+!> (order = sink_mass_deposition_scheme + 1).
+subroutine gpu_bspline_sink(sim, ilevel, rtype, order)
+  use nvtx
+  use ramses_commons, only: ramses_t
+  type(ramses_t), intent(inout) :: sim
+  integer, intent(in) :: ilevel
+  integer, intent(in) :: rtype
+  integer, intent(in) :: order
+
+  integer(kind=4) :: head_idx, tail_idx, num_parts
+  integer :: num_threads, num_blocks, idim
+  real(kind=8) :: dx_loc, vol_loc
+  real(kind=8) :: q_h(1:ndim+1)
+  real(kind=8), device :: q_d(1:ndim+1)
+
+  ! If not ALL and not SINK return
+  if (rtype /= 0 .and. rtype /= 3) return
+
+  ! Coarsest level: accumulate global monopole and dipole.
+  if (ilevel == sim%r%levelmin .and. sim%sink%npart > 0) then
+
+     num_threads = 256
+     num_blocks  = (sim%sink%npart + num_threads - 1) / num_threads
+
+     q_d = 0.0_dp
+     call nvtxStartRange("gpu_bspline_sink:multipole", color=4)
+     call multipole_q_kernel<<<num_blocks, num_threads>>>(sink_xp, sink_mp, q_d, &
+          & 1, sim%sink%npart, int(sim%r%nsinkmax,8))
+     call nvtxEndRange()
+     q_h = q_d
+
+     do idim = 1, ndim+1
+        sim%g%multipole%q(idim) = sim%g%multipole%q(idim) + q_h(idim)
+     end do
+
+  endif
+
+  ! Particle index range for the deposit: everything at or below ilevel.
+  head_idx = sim%sink%headp(ilevel)
+  tail_idx = sim%sink%tailp(sim%r%nlevelmax)
+  num_parts = tail_idx - head_idx + 1
+
+  if (num_parts <= 0) return
+
+  dx_loc  = sim%r%boxlen/2**ilevel
+  vol_loc = dx_loc**ndim
+
+  num_threads = 256
+  num_blocks  = (num_parts + num_threads - 1) / num_threads
+  call nvtxStartRange("gpu_bspline_sink:deposit", color=4)
+  call bspline_part_kernel<<<num_blocks, num_threads>>>(&
+       & sink_sortp, head_idx, num_parts, &
+       & hash_key, hash_val, sim%m%hash_size, ckey_max, key_off, &
+       & box_ckey_min, box_ckey_max, periodic, &
+       & sink_xp, sink_mp, rho, nref, &
+       & real(sim%m%skip(1),kind=dp), real(sim%m%skip(2),kind=dp), real(sim%m%skip(3),kind=dp), &
+       & real(dx_loc,kind=dp), real(vol_loc,kind=dp), real(sim%r%mass_sph,kind=dp), .true., &
+       & real(sim%r%m_refine(ilevel),kind=dp), real(sim%r%mass_cut_refine,kind=dp), &
+       & order, ilevel, int(sim%r%nsinkmax,8))
+  call nvtxEndRange()
+
+end subroutine gpu_bspline_sink
+
+#ifdef CORE
+!> Host dispatcher for the GPU TSC/PCS deposit of core particles
+!> (order = sink_mass_deposition_scheme + 1, cores use the sink schemes).
+subroutine gpu_bspline_core(sim, ilevel, rtype, order)
+  use nvtx
+  use ramses_commons, only: ramses_t
+  type(ramses_t), intent(inout) :: sim
+  integer, intent(in) :: ilevel
+  integer, intent(in) :: rtype
+  integer, intent(in) :: order
+
+  integer(kind=4) :: head_idx, tail_idx, num_parts
+  integer :: num_threads, num_blocks, idim
+  real(kind=8) :: dx_loc, vol_loc
+  real(kind=8) :: q_h(1:ndim+1)
+  real(kind=8), device :: q_d(1:ndim+1)
+
+  ! If not ALL return
+  if (rtype /= 0) return
+
+  ! Coarsest level: accumulate global monopole and dipole.
+  if (ilevel == sim%r%levelmin .and. sim%core%npart > 0) then
+
+     num_threads = 256
+     num_blocks  = (sim%core%npart + num_threads - 1) / num_threads
+
+     q_d = 0.0_dp
+     call nvtxStartRange("gpu_bspline_core:multipole", color=4)
+     call multipole_q_kernel<<<num_blocks, num_threads>>>(core_xp, core_mp, q_d, &
+          & 1, sim%core%npart, int(sim%r%ncoremax,8))
+     call nvtxEndRange()
+     q_h = q_d
+
+     do idim = 1, ndim+1
+        sim%g%multipole%q(idim) = sim%g%multipole%q(idim) + q_h(idim)
+     end do
+
+  endif
+
+  ! Particle index range for the deposit: everything at or below ilevel.
+  head_idx = sim%core%headp(ilevel)
+  tail_idx = sim%core%tailp(sim%r%nlevelmax)
+  num_parts = tail_idx - head_idx + 1
+
+  if (num_parts <= 0) return
+
+  dx_loc  = sim%r%boxlen/2**ilevel
+  vol_loc = dx_loc**ndim
+
+  num_threads = 256
+  num_blocks  = (num_parts + num_threads - 1) / num_threads
+  call nvtxStartRange("gpu_bspline_core:deposit", color=4)
+  call bspline_part_kernel<<<num_blocks, num_threads>>>(&
+       & core_sortp, head_idx, num_parts, &
+       & hash_key, hash_val, sim%m%hash_size, ckey_max, key_off, &
+       & box_ckey_min, box_ckey_max, periodic, &
+       & core_xp, core_mp, rho, nref, &
+       & real(sim%m%skip(1),kind=dp), real(sim%m%skip(2),kind=dp), real(sim%m%skip(3),kind=dp), &
+       & real(dx_loc,kind=dp), real(vol_loc,kind=dp), real(sim%r%mass_sph,kind=dp), .true., &
+       & real(sim%r%m_refine(ilevel),kind=dp), real(sim%r%mass_cut_refine,kind=dp), &
+       & order, ilevel, int(sim%r%ncoremax,8))
+  call nvtxEndRange()
+
+end subroutine gpu_bspline_core
+#endif
 
 !> Per-level particle Courant reduction. Computes vmax = MAX|vp| and
 !> ekin = SUM 0.5*mp*|vp|^2 over particles in level ilevel from device vp/mp
