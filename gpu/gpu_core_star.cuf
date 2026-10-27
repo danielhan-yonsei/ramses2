@@ -1,0 +1,287 @@
+!> Core particle retirement and core to star CUDA kernels.
+module core_star_device
+  use amr_parameters, only: ndim, dp, i8b
+  use gpu_utils
+  use cudafor
+  implicit none
+
+contains
+
+!> Flag the cores with mass that have not accreted for nzero coarse steps.
+attributes(global) subroutine core_retire_flag_kernel(core_mp, core_nacc, flag, &
+     & ncore, nstep_coarse, nzero)
+  real(kind=dp), device :: core_mp(*)
+  integer(kind=4), device :: core_nacc(*)
+  integer(kind=4), device :: flag(*)
+  integer(kind=4), intent(in), value :: ncore, nstep_coarse, nzero
+
+  integer :: i
+
+  i = (blockIdx%x - 1) * blockDim%x + threadIdx%x
+  if (i > ncore) return
+
+  flag(i) = merge(1, 0, core_mp(i) > 0d0 .and. nstep_coarse - core_nacc(i) > nzero)
+
+end subroutine core_retire_flag_kernel
+
+!> Append the flagged cores to the stars in row order, with ids from nstar_tot.
+!> The cores keep their rows with zero mass.
+! Written by Daniel Han (mini-ramses version October 2026).
+attributes(global) subroutine core_retire_kernel(core_xp, core_vp, core_mp, core_zp, core_levelp, &
+     & star_xp, star_vp, star_mp, star_tp, star_zp, star_levelp, star_idp, prefix_sum, &
+     & ncore, nstar, nstar_tot, core_leading, star_leading, texp)
+  real(kind=dp), device :: core_xp(*), core_vp(*), core_mp(*), core_zp(*)
+  integer(kind=4), device :: core_levelp(*)
+  real(kind=dp), device :: star_xp(*), star_vp(*), star_mp(*), star_tp(*), star_zp(*)
+  integer(kind=4), device :: star_levelp(*)
+  integer(i8b), device :: star_idp(*)
+  integer(kind=4), device :: prefix_sum(*)
+  integer(kind=4), intent(in), value :: ncore, nstar
+  integer(kind=8), intent(in), value :: nstar_tot, core_leading, star_leading
+  real(kind=8), intent(in), value :: texp
+
+  integer :: i, k, idim, istar, previous_sum
+
+  i = (blockIdx%x - 1) * blockDim%x + threadIdx%x
+  if (i > ncore) return
+
+  ! The core retires if the scanned flag grows at its row; k is its rank
+  previous_sum = 0
+  if (i > 1) previous_sum = prefix_sum(i - 1)
+  k = prefix_sum(i)
+  if (k == previous_sum) return
+
+  istar = nstar + k
+  do idim = 1, ndim
+     star_xp(istar + (idim-1)*star_leading) = core_xp(i + (idim-1)*core_leading)
+     star_vp(istar + (idim-1)*star_leading) = core_vp(i + (idim-1)*core_leading)
+  end do
+  star_mp(istar) = core_mp(i)
+  star_tp(istar) = texp
+  star_zp(istar) = core_zp(i)
+  star_levelp(istar) = core_levelp(i)
+  star_idp(istar) = int(nstar_tot + int(k, kind=8), kind=i8b)
+  core_mp(i) = 0d0
+
+end subroutine core_retire_kernel
+
+!> Flag the cores that hold at least one star mass unit.
+attributes(global) subroutine core_to_star_flag_kernel(core_mp, flag, ncore, mstar_unit)
+  real(kind=dp), device :: core_mp(*)
+  integer(kind=4), device :: flag(*)
+  integer(kind=4), intent(in), value :: ncore
+  real(kind=8), intent(in), value :: mstar_unit
+
+  integer :: i
+
+  i = (blockIdx%x - 1) * blockDim%x + threadIdx%x
+  if (i > ncore) return
+
+  flag(i) = merge(1, 0, mstar_unit*dble(int(core_mp(i)/mstar_unit)) > 0d0)
+
+end subroutine core_to_star_flag_kernel
+
+!> Append one star per flagged core in row order, with ids from nstar_tot,
+!> holding the whole star mass units of the core, and debit the core.
+! Written by Daniel Han (mini-ramses version October 2026).
+attributes(global) subroutine core_to_star_kernel(core_xp, core_vp, core_mp, core_zp, &
+     & star_xp, star_vp, star_mp, star_tp, star_zp, star_levelp, star_idp, prefix_sum, &
+     & ncore, nstar, nstar_tot, core_leading, star_leading, ilevel, mstar_unit, texp)
+  use cudadevice, only: __dmul_rn
+  real(kind=dp), device :: core_xp(*), core_vp(*), core_mp(*), core_zp(*)
+  real(kind=dp), device :: star_xp(*), star_vp(*), star_mp(*), star_tp(*), star_zp(*)
+  integer(kind=4), device :: star_levelp(*)
+  integer(i8b), device :: star_idp(*)
+  integer(kind=4), device :: prefix_sum(*)
+  integer(kind=4), intent(in), value :: ncore, nstar, ilevel
+  integer(kind=8), intent(in), value :: nstar_tot, core_leading, star_leading
+  real(kind=8), intent(in), value :: mstar_unit, texp
+
+  integer :: i, k, idim, istar, previous_sum
+  real(kind=8) :: mnew
+
+  i = (blockIdx%x - 1) * blockDim%x + threadIdx%x
+  if (i > ncore) return
+
+  ! The core forms a star if the scanned flag grows at its row; k is its rank
+  previous_sum = 0
+  if (i > 1) previous_sum = prefix_sum(i - 1)
+  k = prefix_sum(i)
+  if (k == previous_sum) return
+
+  ! Whole star mass units of the core, rounded before the debit
+  mnew = __dmul_rn(mstar_unit, dble(int(core_mp(i)/mstar_unit)))
+  istar = nstar + k
+  do idim = 1, ndim
+     star_xp(istar + (idim-1)*star_leading) = core_xp(i + (idim-1)*core_leading)
+     star_vp(istar + (idim-1)*star_leading) = core_vp(i + (idim-1)*core_leading)
+  end do
+  star_mp(istar) = mnew
+  star_tp(istar) = texp
+  star_zp(istar) = core_zp(i)
+  star_levelp(istar) = ilevel
+  star_idp(istar) = int(nstar_tot + int(k, kind=8), kind=i8b)
+  core_mp(i) = max(0d0, core_mp(i) - mnew)
+
+end subroutine core_to_star_kernel
+
+!> Total mass of the n stars from row head, added in row order.
+attributes(global) subroutine star_mass_sum_kernel(star_mp, head, n, mass)
+  real(kind=dp), device :: star_mp(*)
+  integer(kind=4), intent(in), value :: head, n
+  real(kind=8), device :: mass
+
+  integer :: k
+  real(kind=8) :: msum
+
+  msum = 0d0
+  do k = head, head + n - 1
+     msum = msum + star_mp(k)
+  end do
+  mass = msum
+
+end subroutine star_mass_sum_kernel
+
+!> Turn the cores that have not accreted for core_zero_acc_intervals coarse
+!> steps into stars, as core_retirement in core_retirement.f90 on one rank.
+! Written by Daniel Han (mini-ramses version October 2026).
+subroutine gpu_core_retirement(sim, nstep_coarse, mstar_loc)
+  use nvtx
+  use ramses_commons, only: ramses_t
+  use star_formation_common_module, only: finish_star_formation
+  use gpu_runner, only: core_xp, core_vp, core_mp, core_zp, core_levelp, core_nacc, &
+       & star_xp, star_vp, star_mp, star_tp, star_zp, star_levelp, star_idp, &
+       & prefix_sum, gpu_scan
+  implicit none
+  type(ramses_t) :: sim
+  integer, intent(in) :: nstep_coarse
+  real(kind=8), intent(out) :: mstar_loc
+
+  integer(kind=4) :: ncore, nnew, head_idx
+  integer(kind=4), device :: nnew_d
+  real(kind=8), device :: mstar_d
+  integer :: num_threads, num_blocks
+
+  mstar_loc = 0d0
+  ncore = sim%core%npart
+  if (ncore <= 0) return
+
+  num_threads = 128
+  num_blocks = (ncore + num_threads - 1) / num_threads
+
+  call nvtxStartRange("GPU Core Retirement", color=3)!blue
+
+  ! Flag the retiring cores and number them in row order
+  call core_retire_flag_kernel<<<num_blocks, num_threads>>>(core_mp, core_nacc, prefix_sum, &
+       & ncore, nstep_coarse, sim%r%core_zero_acc_intervals)
+  call GPU_Error_Check(__FILE__, __LINE__)
+  head_idx = 1
+  call gpu_scan(prefix_sum, head_idx, ncore, nnew_d)
+  nnew = nnew_d
+
+  if (nnew > 0) then
+
+     if (int(sim%star%npart, kind=8) + int(nnew, kind=8) > int(sim%r%nstarmax, kind=8)) then
+        write(*,*)'Not enough memory for star particle'
+        write(*,*)'Increase nstarmax in the namelist'
+        stop
+     endif
+
+     call core_retire_kernel<<<num_blocks, num_threads>>>(core_xp, core_vp, core_mp, core_zp, &
+          & core_levelp, star_xp, star_vp, star_mp, star_tp, star_zp, star_levelp, star_idp, &
+          & prefix_sum, ncore, sim%star%npart, sim%star%npart_tot, &
+          & int(sim%r%ncoremax, kind=8), int(sim%r%nstarmax, kind=8), sim%g%texp)
+     call GPU_Error_Check(__FILE__, __LINE__)
+
+     call star_mass_sum_kernel<<<1, 1>>>(star_mp, sim%star%npart + 1, nnew, mstar_d)
+     call GPU_Error_Check(__FILE__, __LINE__)
+     mstar_loc = mstar_d
+
+     ! Update host star particle count
+     sim%star%npart = sim%star%npart + nnew
+     sim%star%npart_tot = sim%star%npart_tot + nnew
+     sim%star%tailp(sim%r%nlevelmax) = sim%star%tailp(sim%r%nlevelmax) + nnew
+     call finish_star_formation(sim)
+
+  endif
+
+  call nvtxEndRange()
+
+end subroutine gpu_core_retirement
+
+!> Convert core mass into stars in units of core_to_star_mass at the finest
+!> level, as star_formation_from_core in core_to_star_formation.f90 on one rank.
+! Written by Daniel Han (mini-ramses version October 2026).
+subroutine gpu_core_to_star(sim, ilevel, mstar_loc)
+  use nvtx
+  use constants, only: M_sun
+  use ramses_commons, only: ramses_t
+  use core_sf_support_module, only: core_top_level
+  use gpu_runner, only: core_xp, core_vp, core_mp, core_zp, &
+       & star_xp, star_vp, star_mp, star_tp, star_zp, star_levelp, star_idp, &
+       & prefix_sum, gpu_scan
+  implicit none
+  type(ramses_t) :: sim
+  integer, intent(in) :: ilevel
+  real(kind=8), intent(out) :: mstar_loc
+
+  real(kind=8) :: scale_nH, scale_T2, scale_l, scale_d, scale_t, scale_v
+  real(kind=8) :: scale_msun, mstar_unit
+  integer(kind=4) :: ncore, nnew, head_idx
+  integer(kind=4), device :: nnew_d
+  real(kind=8), device :: mstar_d
+  integer :: num_threads, num_blocks
+
+  mstar_loc = 0d0
+  if (ilevel /= core_top_level(sim%r, sim%g)) return
+  ncore = sim%core%npart
+  if (ncore <= 0) return
+
+  ! Star mass unit in code units
+  call units(sim%r, sim%g, scale_l, scale_t, scale_d, scale_v, scale_nH, scale_T2)
+  scale_msun = scale_l**3*scale_d/M_sun
+  mstar_unit = sim%r%core_to_star_mass/scale_msun
+
+  num_threads = 128
+  num_blocks = (ncore + num_threads - 1) / num_threads
+
+  call nvtxStartRange("GPU Core To Star", color=3)!blue
+
+  ! Flag the cores that form a star and number them in row order
+  call core_to_star_flag_kernel<<<num_blocks, num_threads>>>(core_mp, prefix_sum, &
+       & ncore, mstar_unit)
+  call GPU_Error_Check(__FILE__, __LINE__)
+  head_idx = 1
+  call gpu_scan(prefix_sum, head_idx, ncore, nnew_d)
+  nnew = nnew_d
+
+  if (nnew > 0) then
+
+     if (int(sim%star%npart, kind=8) + int(nnew, kind=8) > int(sim%r%nstarmax, kind=8)) then
+        write(*,*)'Not enough memory for star particle'
+        write(*,*)'Increase nstarmax in the namelist'
+        stop
+     endif
+
+     call core_to_star_kernel<<<num_blocks, num_threads>>>(core_xp, core_vp, core_mp, core_zp, &
+          & star_xp, star_vp, star_mp, star_tp, star_zp, star_levelp, star_idp, prefix_sum, &
+          & ncore, sim%star%npart, sim%star%npart_tot, &
+          & int(sim%r%ncoremax, kind=8), int(sim%r%nstarmax, kind=8), ilevel, mstar_unit, sim%g%texp)
+     call GPU_Error_Check(__FILE__, __LINE__)
+
+     call star_mass_sum_kernel<<<1, 1>>>(star_mp, sim%star%npart + 1, nnew, mstar_d)
+     call GPU_Error_Check(__FILE__, __LINE__)
+     mstar_loc = mstar_d
+
+     ! Update host star particle count
+     sim%star%npart = sim%star%npart + nnew
+     sim%star%npart_tot = sim%star%npart_tot + nnew
+     sim%star%tailp(sim%r%nlevelmax) = sim%star%tailp(sim%r%nlevelmax) + nnew
+
+  endif
+
+  call nvtxEndRange()
+
+end subroutine gpu_core_to_star
+
+end module core_star_device

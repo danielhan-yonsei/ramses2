@@ -1,4 +1,7 @@
 module core_retirement_module
+#ifdef _CUDA
+  use core_star_device, only: gpu_core_retirement
+#endif
   implicit none
 
   ! Input: coarse step. Output: core mass turned into stars.
@@ -29,8 +32,12 @@ recursive subroutine r_core_retirement(pst,input,input_size,output,output_size)
      call mdl_get_reply(pst%s%mdl,rID,output_size,next_output)
      output%mass=output%mass+next_output%mass
   else
+#ifdef _CUDA
+     call gpu_core_retirement(pst%s,input%nstep_coarse,output%mass)
+#else
      call core_retirement(pst%s,pst%s%r,pst%s%g,pst%s%star,pst%s%core, &
           input%nstep_coarse,output%mass)
+#endif
   endif
 end subroutine r_core_retirement
 
