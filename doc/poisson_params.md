@@ -23,14 +23,14 @@ These schemes only apply to CPU runs. GPU builds (`COMPILER=NVHPC` with data on 
 
 | Variable name | Fortran type | Default value  | Description      |
 |:------------------- |:-------|:----- |:------------------------- |
-| `part_mass_deposition_scheme`     | `integer` | 1 | Mass deposition scheme for dark matter particles (1 = CIC, 2 = TSC, 3 = PCS). CPU only. |
-| `part_force_interpolation_scheme` | `integer` | 1 | Force interpolation scheme for dark matter particles (1 = CIC, 2 = TSC, 3 = PCS). CPU only. |
-| `part_dep_algo`                   | `integer` | 2 | GPU CIC deposit kernel for dark matter particles: 1 = large (unshifted 3^ndim stencil), 2 = medium (half-cell shifted 2^ndim stencil), 3 = small (one segmented scan per stencil offset over runs of particles that share a source cell). |
-| `star_mass_deposition_scheme`     | `integer` | 1 | Mass deposition scheme for star particles (1 = CIC, 2 = TSC, 3 = PCS). CPU only. |
-| `star_force_interpolation_scheme` | `integer` | 1 | Force interpolation scheme for star particles (1 = CIC, 2 = TSC, 3 = PCS). CPU only. |
+| `part_mass_deposition_scheme`     | `integer` | 1 | Mass deposition scheme for dark matter particles (1 = CIC, 2 = TSC, 3 = PCS). |
+| `part_force_interpolation_scheme` | `integer` | 1 | Force interpolation scheme for dark matter particles (1 = CIC, 2 = TSC, 3 = PCS). |
+| `part_dep_algo`                   | `integer` | 2 | GPU CIC deposit kernel for dark matter particles: 1 = large (unshifted 3^ndim stencil), 2 = medium (half-cell shifted 2^ndim stencil), 3 = small (one segmented scan per stencil offset over runs of particles that share a source cell). Used with CIC only: TSC and PCS use a direct per-particle deposit on the GPU. |
+| `star_mass_deposition_scheme`     | `integer` | 1 | Mass deposition scheme for star particles (1 = CIC, 2 = TSC, 3 = PCS). |
+| `star_force_interpolation_scheme` | `integer` | 1 | Force interpolation scheme for star particles (1 = CIC, 2 = TSC, 3 = PCS). |
 | `star_dep_algo`                   | `integer` | 2 | GPU CIC deposit kernel for star particles (same values as `part_dep_algo`). |
-| `sink_mass_deposition_scheme`     | `integer` | 1 | Mass deposition scheme for sink particles (1 = CIC, 2 = TSC, 3 = PCS). CPU only. |
-| `sink_force_interpolation_scheme` | `integer` | 1 | Force interpolation scheme for sink particles (1 = CIC, 2 = TSC, 3 = PCS). CPU only. |
+| `sink_mass_deposition_scheme`     | `integer` | 1 | Mass deposition scheme for sink particles (1 = CIC, 2 = TSC, 3 = PCS). |
+| `sink_force_interpolation_scheme` | `integer` | 1 | Force interpolation scheme for sink particles (1 = CIC, 2 = TSC, 3 = PCS). |
 | `sink_dep_algo`                   | `integer` | 2 | GPU CIC deposit kernel for sink particles (same values as `part_dep_algo`). |
 | `tree_mass_deposition_scheme`     | `integer` | 1 | Mass deposition scheme for tree particles. Read but currently unused: tree particles do not deposit mass. |
-| `tree_force_interpolation_scheme` | `integer` | 1 | Force interpolation scheme for tree particles (1 = CIC, 2 = TSC, 3 = PCS). CPU only. |
+| `tree_force_interpolation_scheme` | `integer` | 1 | Force interpolation scheme for tree particles (1 = CIC, 2 = TSC, 3 = PCS). |

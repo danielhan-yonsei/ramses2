@@ -1420,19 +1420,6 @@ subroutine m_read_params(pst)
      write(*,*)'Error: err_grad_u, err_grad_xHI and err_grad_xHII are not supported on GPU'
      nml_ok=.false.
   endif
-  ! The GPU interpolates the force with CIC only (cores use the sink schemes)
-  if(part.and.part_force_interpolation_scheme/=1)then
-     write(*,*)'Error: part_force_interpolation_scheme/=1 (TSC or PCS) is not supported on GPU'
-     nml_ok=.false.
-  endif
-  if(star.and.star_force_interpolation_scheme/=1)then
-     write(*,*)'Error: star_force_interpolation_scheme/=1 (TSC or PCS) is not supported on GPU'
-     nml_ok=.false.
-  endif
-  if((sink.or.s%r%core).and.sink_force_interpolation_scheme/=1)then
-     write(*,*)'Error: sink_force_interpolation_scheme/=1 (TSC or PCS) is not supported on GPU'
-     nml_ok=.false.
-  endif
   ! The GPU has no boundary regions for a non-periodic box
   if(any(.not.periodic(1:ndim)).or.nbound>0)then
      write(*,*)'Error: a non-periodic box (periodic=.false. or nbound>0) is not supported on GPU'
