@@ -168,6 +168,31 @@ contains
      nml_ok=.false.
   endif
 
+#ifdef _CUDA
+  ! The GPU core path runs on one rank
+  if(core.and.s%g%ncpu>1)then
+     write(*,*)'Error: cores on more than one rank are not supported on GPU'
+     nml_ok=.false.
+  endif
+  ! Core phases that are not on the GPU yet
+  if(core.and.core_retire_if_no_acc)then
+     write(*,*)'Error: core_retire_if_no_acc is not supported on GPU yet'
+     nml_ok=.false.
+  endif
+  if(core.and.core_to_star)then
+     write(*,*)'Error: core_to_star is not supported on GPU yet'
+     nml_ok=.false.
+  endif
+  if(core.and.core_merge)then
+     write(*,*)'Error: core_merge is not supported on GPU yet'
+     nml_ok=.false.
+  endif
+  if(core.and.core_form)then
+     write(*,*)'Error: core_form is not supported on GPU yet'
+     nml_ok=.false.
+  endif
+#endif
+
   s%r%core=core
   s%r%ncoremax=ncoremax
   s%r%core_to_star_mass=core_to_star_mass

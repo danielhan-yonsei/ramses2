@@ -6,6 +6,9 @@ module rho_fine_module
   use part_device, only: gpu_split_star, gpu_sort_star, gpu_cic_star_large, gpu_cic_star_medium, gpu_cic_star_small
   use part_device, only: gpu_split_sink, gpu_sort_sink, gpu_cic_sink_large, gpu_cic_sink_medium, gpu_cic_sink_small
   use part_device, only: gpu_split_tree, gpu_sort_tree
+#ifdef CORE
+  use part_device, only: gpu_split_core, gpu_sort_core, gpu_cic_core_large
+#endif
 #endif
 #ifdef _METAL
   use metal_runner, only: metal_multipole_leaf, metal_multipole_upload, metal_reset_rho, metal_cic_multipole2, &
@@ -731,6 +734,9 @@ recursive subroutine r_cic_part(pst,input_array,input_size)
               call gpu_cic_sink_large(pst%s, ilevel, rtype)
            endif
         endif
+#ifdef CORE
+        if(pst%s%r%core)call gpu_cic_core_large(pst%s, ilevel, rtype)
+#endif
         return
      endif
 #elif defined(_METAL)
@@ -1329,6 +1335,9 @@ recursive subroutine r_split_part(pst,ilevel,input_size)
         if(pst%s%r%part)call gpu_split_part(pst%s, ilevel)
         if(pst%s%r%star)call gpu_split_star(pst%s, ilevel)
         if(pst%s%r%sink)call gpu_split_sink(pst%s, ilevel)
+#ifdef CORE
+        if(pst%s%r%core)call gpu_split_core(pst%s, ilevel)
+#endif
         if(pst%s%r%tree)call gpu_split_tree(pst%s, ilevel)
         return
      endif
@@ -2105,6 +2114,9 @@ recursive subroutine r_sort_part(pst,ilevel,input_size)
         if(pst%s%r%part)call gpu_sort_part(pst%s, ilevel)
         if(pst%s%r%star)call gpu_sort_star(pst%s, ilevel)
         if(pst%s%r%sink)call gpu_sort_sink(pst%s, ilevel)
+#ifdef CORE
+        if(pst%s%r%core)call gpu_sort_core(pst%s, ilevel)
+#endif
         if(pst%s%r%tree)call gpu_sort_tree(pst%s, ilevel)
         return
      endif

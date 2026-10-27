@@ -353,8 +353,12 @@ MODOBJ +=  multigrid_fine_coarse.o rho_fine.o upload.o init_xion.o \
 	 sink_evolution.o sink_merger.o task_manager.o rt_step.o cr_step.o amr_step.o \
 	 adaptive_loop.o write_gitinfo.o
 ifeq ($(CORE),1)
-   MODOBJ += core_params.o core_sf_support.o star_formation_common.o core_to_star_formation.o \
-      core_clump_output.o core_formation.o core_evolution.o core_retirement.o core_merger.o core_step.o
+   MODOBJ += core_params.o core_sf_support.o star_formation_common.o
+   ifeq ($(COMPILER),NVHPC)
+      MODOBJ += gpu_core.o
+   endif
+   MODOBJ += core_to_star_formation.o core_clump_output.o core_formation.o core_evolution.o \
+      core_retirement.o core_merger.o core_step.o
 endif
 #############################################################################
 ramses:	$(MODOBJ) ramses.o $(METAL_METALLIB)

@@ -10,6 +10,9 @@ module core_evolution_module
   use amr_parameters, only: ndim, twotondim, dp
   use hydro_parameters, only: nvar, nener
   use sink_evolution_module, only: sink_B_spline_weights_CIC, sink_B_spline_weights_TSC, sink_B_spline_weights_PCS
+#ifdef _CUDA
+  use core_device, only: gpu_core_prepare, gpu_core_finalize
+#endif
 
   integer,parameter::CORE_ACC_PREPARE=1
   integer,parameter::CORE_ACC_FINALIZE=2
@@ -179,9 +182,17 @@ contains
        output%mass=0d0
        select case(input%action)
        case(CORE_ACC_PREPARE)
+#ifdef _CUDA
+          call gpu_core_prepare(pst%s,input%ilevel)
+#else
           call core_prepare(pst%s,pst%s%core,input)
+#endif
        case(CORE_ACC_FINALIZE)
+#ifdef _CUDA
+          call gpu_core_finalize(pst%s,input%ilevel,input%nstep_coarse,output%mass)
+#else
           call core_finalize(pst%s,pst%s%core,input,output)
+#endif
        end select
     endif
 

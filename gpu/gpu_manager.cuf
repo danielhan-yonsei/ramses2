@@ -91,6 +91,27 @@ recursive subroutine r_set_grid_device(pst)
         call nvtxEndRange()
      endif
 
+#ifdef CORE
+     ! Core particle H→D
+     if (pst%s%r%core .and. allocated(pst%s%core%xp) .and. allocated(core_xp)) then
+        call nvtxStartRange("Copy core from host to device", color=5)!red
+        core_xp     = pst%s%core%xp
+        core_vp     = pst%s%core%vp
+        core_fp     = pst%s%core%fp
+        core_jp     = pst%s%core%jp
+        core_mp     = pst%s%core%mp
+        core_zp     = pst%s%core%zp
+        core_tp     = pst%s%core%tp
+        core_up     = pst%s%core%up
+        core_levelp = pst%s%core%levelp
+        core_nacc   = pst%s%core%nacc
+        core_sortp  = pst%s%core%sortp
+        core_idp    = pst%s%core%idp
+        call GPU_Error_Check(__FILE__, __LINE__)
+        call nvtxEndRange()
+     endif
+#endif
+
      ! Tree particle H→D
      if (pst%s%r%tree .and. allocated(pst%s%tree%xp) .and. allocated(tree_xp)) then
         call nvtxStartRange("Copy tree from host to device", color=5)!red
@@ -232,6 +253,26 @@ subroutine gpu_to_host_part(pst)
      call GPU_Error_Check(__FILE__, __LINE__)
      call nvtxEndRange()
   endif
+
+#ifdef CORE
+  if (allocated(core_xp)) then
+     call nvtxStartRange("Copy core from device to host", color=5)!red
+     pst%s%core%xp     = core_xp
+     pst%s%core%vp     = core_vp
+     pst%s%core%fp     = core_fp
+     pst%s%core%jp     = core_jp
+     pst%s%core%mp     = core_mp
+     pst%s%core%zp     = core_zp
+     pst%s%core%tp     = core_tp
+     pst%s%core%up     = core_up
+     pst%s%core%levelp = core_levelp
+     pst%s%core%nacc   = core_nacc
+     pst%s%core%sortp  = core_sortp
+     pst%s%core%idp    = core_idp
+     call GPU_Error_Check(__FILE__, __LINE__)
+     call nvtxEndRange()
+  endif
+#endif
 
   if (allocated(tree_xp)) then
      call nvtxStartRange("Copy tree from device to host", color=5)!red
@@ -712,6 +753,37 @@ subroutine gpu_allocate_sink(sim)
   call ensure_scan_capacity(scan_size, sim%r%sink_dep_algo)
 
 end subroutine gpu_allocate_sink
+!###########################################################
+!###########################################################
+!###########################################################
+!###########################################################
+#ifdef CORE
+subroutine gpu_allocate_core(sim)
+  use amr_parameters, ONLY: ndim
+  implicit none
+  type(ramses_t) :: sim
+  integer :: scan_size
+
+  allocate(core_xp(1:sim%r%ncoremax, 1:ndim))
+  allocate(core_vp(1:sim%r%ncoremax, 1:ndim))
+  allocate(core_fp(1:sim%r%ncoremax, 1:ndim))
+  allocate(core_jp(1:sim%r%ncoremax, 1:ndim))
+  allocate(core_mp(1:sim%r%ncoremax))
+  allocate(core_zp(1:sim%r%ncoremax))
+  allocate(core_tp(1:sim%r%ncoremax))
+  allocate(core_up(1:sim%r%ncoremax))
+  allocate(core_sortp(1:sim%r%ncoremax))
+  allocate(core_levelp(1:sim%r%ncoremax))
+  allocate(core_nacc(1:sim%r%ncoremax))
+  allocate(core_idp(1:sim%r%ncoremax))
+  allocate(prefix_sum_phys(1:sim%r%ncoremax))
+  ! Particle scratch and prefix sum arrays (cores use the large CIC deposit)
+  scan_size = sim%r%ncoremax
+  call ensure_part_swap_capacity(scan_size)
+  call ensure_scan_capacity(scan_size, 1)
+
+end subroutine gpu_allocate_core
+#endif
 !###########################################################
 !###########################################################
 !###########################################################
