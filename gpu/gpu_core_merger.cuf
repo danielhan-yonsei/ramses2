@@ -1,0 +1,490 @@
+!> Core particle merger CUDA kernels.
+module core_merger_device
+  use amr_parameters, only: ndim, twotondim, dp
+  use gpu_utils
+  use cudafor
+  use feedback_device, only: get_cell_by_key
+  use gpu_runner, only: core_xp, core_vp, core_jp, core_mp, core_zp, core_tp, core_up, core_nacc
+  implicit none
+
+  !> Row of each marker (the rank of a core with mp>0 in its level), and
+  !> whether the core still exists and was changed by the merger
+  integer(kind=4), device, allocatable, dimension(:) :: marker_row_d
+  logical, device, allocatable, dimension(:) :: marker_exists_d, marker_changed_d
+
+  !> Records, a marker and one cell of its stencil: cell key and record index
+  !> before and after the sort, and the pair count of each sorted record
+  integer(kind=8), device, allocatable, target, dimension(:) :: record_key_d, record_key_sorted_d
+  integer(kind=4), device, allocatable, target, dimension(:) :: record_idx_d, record_idx_sorted_d
+  integer(kind=4), device, allocatable, target, dimension(:) :: record_npair_d
+
+  !> Candidate pairs, the two markers in one key, before and after the sort
+  integer(kind=8), device, allocatable, target, dimension(:) :: pair_key_d, pair_key_sorted_d
+  integer(kind=4), device, allocatable, target, dimension(:) :: pair_idx_d, pair_idx_sorted_d
+
+contains
+
+  ! =========================================================================
+  !> Minimum-image offset along the periodic directions (core_minimum_image_delta).
+  attributes(device) subroutine core_minimum_image_device(dpos, bs, periodic_d)
+    implicit none
+    real(kind=dp), intent(inout) :: dpos(3)
+    real(kind=dp), intent(in) :: bs(3)
+    logical, device :: periodic_d(3)
+
+    integer :: idim
+
+    do idim = 1, 3
+       if (periodic_d(idim)) dpos(idim) = dpos(idim) - anint(dpos(idim)/bs(idim))*bs(idim)
+    end do
+  end subroutine core_minimum_image_device
+  ! =========================================================================
+
+  ! =========================================================================
+  !> Wrap a position into the box along the periodic directions (core_wrap_position).
+  attributes(device) subroutine core_wrap_position_device(xpos, bs, periodic_d)
+    implicit none
+    real(kind=dp), intent(inout) :: xpos(3)
+    real(kind=dp), intent(in) :: bs(3)
+    logical, device :: periodic_d(3)
+
+    integer :: idim
+
+    do idim = 1, 3
+       if (periodic_d(idim)) xpos(idim) = modulo(xpos(idim), bs(idim))
+    end do
+  end subroutine core_wrap_position_device
+  ! =========================================================================
+
+  ! =========================================================================
+  !> Cross product c = a x b, as cross in pm_commons.f90.
+  attributes(device) subroutine core_cross_device(a, b, c)
+    implicit none
+    real(kind=dp), intent(in) :: a(3), b(3)
+    real(kind=dp), intent(out) :: c(3)
+
+    c(1) = a(2)*b(3) - a(3)*b(2)
+    c(2) = a(3)*b(1) - a(1)*b(3)
+    c(3) = a(1)*b(2) - a(2)*b(1)
+  end subroutine core_cross_device
+  ! =========================================================================
+
+  ! =========================================================================
+  !> Core merger: 1 for the cores of level ilevel with mp>0, 0 for the others.
+  attributes(global) subroutine core_marker_flag_kernel(prefix_sum_d, head_idx, num_parts)
+    implicit none
+    integer(kind=4), device :: prefix_sum_d(*)
+    integer(kind=4), intent(in), value :: head_idx, num_parts
+
+    integer :: idx, ipart
+
+    idx = (blockIdx%x - 1) * blockDim%x + threadIdx%x
+    if (idx > num_parts) return
+    ipart = head_idx + idx - 1
+
+    prefix_sum_d(ipart) = 1
+    if (core_mp(ipart) <= 0.0_dp) prefix_sum_d(ipart) = 0
+  end subroutine core_marker_flag_kernel
+  ! =========================================================================
+
+  ! =========================================================================
+  !> Core merger: row of each marker from the scanned flags; no core is merged yet.
+  attributes(global) subroutine core_marker_row_kernel(prefix_sum_d, head_idx, num_parts)
+    implicit none
+    integer(kind=4), device :: prefix_sum_d(*)
+    integer(kind=4), intent(in), value :: head_idx, num_parts
+
+    integer :: idx, ipart, marker
+
+    idx = (blockIdx%x - 1) * blockDim%x + threadIdx%x
+    if (idx > num_parts) return
+    ipart = head_idx + idx - 1
+
+    if (core_mp(ipart) <= 0.0_dp) return
+    marker = prefix_sum_d(ipart)
+    marker_row_d(marker) = ipart
+    marker_exists_d(marker) = .true.
+    marker_changed_d(marker) = .false.
+  end subroutine core_marker_row_kernel
+  ! =========================================================================
+
+  ! =========================================================================
+  !> Core merger: cell key of each record, a marker and one cell of its stencil at
+  !> ilevel; huge(1_8) out of a non-periodic box or without an oct at ilevel.
+  !> Mirrors core_enlarged_stencil and get_parent_cell in core_merger.f90.
+  ! Written by Daniel Han (mini-ramses version October 2026).
+  attributes(global) subroutine core_merger_record_kernel( &
+       & hash_key_d, hash_val_d, hash_size_d, ckey_max_d, key_off_d, ngridmax, &
+       & box_ckey_min_d, box_ckey_max_d, periodic_d, &
+       & nrecord, nsearch, ilevel, skip1, skip2, skip3, dx_loc)
+    implicit none
+    integer(kind=8), device :: hash_key_d(*)
+    integer(kind=4), device :: hash_val_d(*)
+    integer(kind=4), intent(in), value :: hash_size_d
+    integer(kind=4), device :: ckey_max_d(*)
+    integer(kind=8), device :: key_off_d(*)
+    integer(kind=4), intent(in), value :: ngridmax
+    integer(kind=4), device :: box_ckey_min_d(3,*)
+    integer(kind=4), device :: box_ckey_max_d(3,*)
+    logical, device :: periodic_d(3)
+    integer(kind=4), intent(in), value :: nrecord, nsearch, ilevel
+    real(kind=dp), intent(in), value :: skip1, skip2, skip3, dx_loc
+
+    integer(kind=8) :: idx
+    integer :: irec, nside, nnei, marker, j, ipart, idim, igrid, icell
+    integer(kind=4) :: ckey(3), offset(3)
+    real(kind=dp) :: xcen(3)
+    logical :: valid
+
+    idx = int(blockIdx%x - 1, kind=8) * blockDim%x + threadIdx%x
+    if (idx > nrecord) return
+    irec = int(idx)
+
+    record_key_d(irec) = huge(1_8)
+    record_idx_d(irec) = irec
+
+    ! Record irec is cell j of the stencil of marker
+    nside = 2*nsearch + 1
+    nnei = nside**3
+    marker = (irec - 1) / nnei + 1
+    j = irec - 1 - (marker - 1) * nnei
+    offset(1) = mod(j, nside) - nsearch
+    offset(2) = mod(j / nside, nside) - nsearch
+    offset(3) = j / (nside*nside) - nsearch
+
+    ipart = marker_row_d(marker)
+    xcen(1) = (core_xp(ipart, 1) + skip1) / dx_loc
+    xcen(2) = (core_xp(ipart, 2) + skip2) / dx_loc
+    xcen(3) = (core_xp(ipart, 3) + skip3) / dx_loc
+
+    valid = .true.
+    do idim = 1, 3
+       ckey(idim) = int(xcen(idim)) + offset(idim)
+       if (periodic_d(idim)) then
+          do while (ckey(idim) < box_ckey_min_d(idim, ilevel + 1))
+             ckey(idim) = ckey(idim) - box_ckey_min_d(idim, ilevel + 1) + box_ckey_max_d(idim, ilevel + 1)
+          end do
+          do while (ckey(idim) >= box_ckey_max_d(idim, ilevel + 1))
+             ckey(idim) = ckey(idim) + box_ckey_min_d(idim, ilevel + 1) - box_ckey_max_d(idim, ilevel + 1)
+          end do
+       else
+          if (ckey(idim) < box_ckey_min_d(idim, ilevel + 1)) valid = .false.
+          if (ckey(idim) >= box_ckey_max_d(idim, ilevel + 1)) valid = .false.
+       endif
+    end do
+    if (.not. valid) return
+
+    call get_cell_by_key(hash_key_d, hash_val_d, hash_size_d, ckey_max_d, key_off_d, &
+         & ilevel, ckey, igrid, icell)
+    if (igrid <= 0 .or. igrid > ngridmax) return
+    record_key_d(irec) = int(igrid - 1, kind=8) * twotondim + icell
+  end subroutine core_merger_record_kernel
+  ! =========================================================================
+
+  ! =========================================================================
+  !> Core merger: pairs of each cell, from its records in marker order: each marker
+  !> with the cell's nslot smallest markers below it, counted (emit false) or written.
+  !> Mirrors core_marker_insert and collect_core_collisions in core_merger.f90.
+  ! Written by Daniel Han (mini-ramses version October 2026).
+  attributes(global) subroutine core_merger_pair_kernel(nrecord, nnei, nslot, emit)
+    implicit none
+    integer(kind=4), intent(in), value :: nrecord, nnei, nslot
+    logical, intent(in), value :: emit
+
+    integer(kind=8) :: idx, cell
+    integer :: ihead, irec, jrec, id1, id2, last, nkept, npair
+
+    idx = int(blockIdx%x - 1, kind=8) * blockDim%x + threadIdx%x
+    if (idx > nrecord) return
+    ihead = int(idx)
+
+    if (.not. emit) record_npair_d(ihead) = 0
+    cell = record_key_sorted_d(ihead)
+    if (cell == huge(1_8)) return
+    if (ihead > 1) then
+       if (record_key_sorted_d(ihead - 1) == cell) return
+    endif
+
+    npair = 0
+    if (emit .and. ihead > 1) npair = record_npair_d(ihead - 1)
+    do irec = ihead, nrecord
+       if (record_key_sorted_d(irec) /= cell) exit
+       id2 = (record_idx_sorted_d(irec) - 1) / nnei + 1
+       ! The distinct markers before id2 in the run, up to nslot
+       nkept = 0
+       last = 0
+       do jrec = ihead, irec - 1
+          id1 = (record_idx_sorted_d(jrec) - 1) / nnei + 1
+          if (id1 >= id2 .or. nkept == nslot) exit
+          if (id1 == last) cycle
+          nkept = nkept + 1
+          last = id1
+          npair = npair + 1
+          if (emit) then
+             pair_key_d(npair) = ior(ishft(int(id1, kind=8), 32), int(id2, kind=8))
+             pair_idx_d(npair) = npair
+          endif
+       end do
+    end do
+    if (.not. emit) record_npair_d(ihead) = npair
+  end subroutine core_merger_pair_kernel
+  ! =========================================================================
+
+  ! =========================================================================
+  !> Core merger: merge the distinct pairs in (id1,id2) order on one thread; id1 takes
+  !> the merged core, id2 keeps its row with zero mass.
+  !> Mirrors merge_core_pairs and update_merged_cores in core_merger.f90.
+  ! Written by Daniel Han (mini-ramses version October 2026).
+  attributes(global) subroutine core_merger_replay_kernel(npair, merge_radius, t_merge, t_now, &
+       & periodic_d, bs1, bs2, bs3)
+    implicit none
+    integer(kind=4), intent(in), value :: npair
+    real(kind=dp), intent(in), value :: merge_radius, t_merge, t_now
+    logical, device :: periodic_d(3)
+    real(kind=dp), intent(in), value :: bs1, bs2, bs3
+
+    integer :: i, idim, id1, id2, ipart1, ipart2
+    integer(kind=8) :: key, last_key
+    real(kind=dp) :: separation, age1, age2, mass1, mass2, total_mass, znew, unew, tpnew
+    real(kind=dp), dimension(3) :: bs, dpos, pos_keep, pos_delete, com_unwrapped, com_position
+    real(kind=dp), dimension(3) :: vnew, jnew, r1, r2, v1, v2, l1, l2
+
+    bs(1) = bs1; bs(2) = bs2; bs(3) = bs3
+
+    last_key = -1_8
+    do i = 1, npair
+       key = pair_key_sorted_d(i)
+       if (key == last_key) cycle
+       last_key = key
+       id1 = int(ishft(key, -32))
+       id2 = int(iand(key, 4294967295_8))
+       if (.not. marker_exists_d(id1) .or. .not. marker_exists_d(id2)) cycle
+       ipart1 = marker_row_d(id1)
+       ipart2 = marker_row_d(id2)
+
+       ! Merging criteria
+       do idim = 1, 3
+          dpos(idim) = core_xp(ipart1, idim) - core_xp(ipart2, idim)
+       end do
+       call core_minimum_image_device(dpos, bs, periodic_d)
+       separation = sqrt(dpos(1)**2 + dpos(2)**2 + dpos(3)**2)
+       age1 = t_now - core_tp(ipart1)
+       age2 = t_now - core_tp(ipart2)
+       if (.not. (age1 < t_merge .and. age2 < t_merge .and. separation < merge_radius)) cycle
+
+       ! Merged core, from the minimum image of core id2
+       mass1 = core_mp(ipart1)
+       mass2 = core_mp(ipart2)
+       total_mass = mass1 + mass2
+       do idim = 1, 3
+          pos_keep(idim) = core_xp(ipart1, idim)
+          dpos(idim) = core_xp(ipart2, idim) - pos_keep(idim)
+       end do
+       call core_minimum_image_device(dpos, bs, periodic_d)
+       do idim = 1, 3
+          pos_delete(idim) = pos_keep(idim) + dpos(idim)
+          com_unwrapped(idim) = (mass1*pos_keep(idim) + mass2*pos_delete(idim)) / total_mass
+          com_position(idim) = com_unwrapped(idim)
+          vnew(idim) = (mass1*core_vp(ipart1, idim) + mass2*core_vp(ipart2, idim)) / total_mass
+       end do
+       call core_wrap_position_device(com_position, bs, periodic_d)
+       unew = (mass1*core_up(ipart1) + mass2*core_up(ipart2)) / total_mass
+       znew = (mass1*core_zp(ipart1) + mass2*core_zp(ipart2)) / total_mass
+       tpnew = min(core_tp(ipart1), core_tp(ipart2))
+       ! Spin plus the orbital angular momentum about the centre of mass
+       do idim = 1, 3
+          r1(idim) = pos_keep(idim) - com_unwrapped(idim)
+          r2(idim) = pos_delete(idim) - com_unwrapped(idim)
+          v1(idim) = core_vp(ipart1, idim) - vnew(idim)
+          v2(idim) = core_vp(ipart2, idim) - vnew(idim)
+       end do
+       call core_cross_device(r1, v1, l1)
+       call core_cross_device(r2, v2, l2)
+       do idim = 1, 3
+          jnew(idim) = (mass1*core_jp(ipart1, idim) + mass2*core_jp(ipart2, idim) &
+               & + mass1*l1(idim) + mass2*l2(idim)) / total_mass
+       end do
+
+       core_mp(ipart1) = total_mass
+       core_mp(ipart2) = 0.0_dp
+       core_tp(ipart1) = tpnew
+       core_tp(ipart2) = tpnew
+       core_zp(ipart1) = znew
+       core_zp(ipart2) = znew
+       core_up(ipart1) = unew
+       core_up(ipart2) = unew
+       do idim = 1, 3
+          core_xp(ipart1, idim) = com_position(idim)
+          core_xp(ipart2, idim) = com_position(idim)
+          core_vp(ipart1, idim) = vnew(idim)
+          core_vp(ipart2, idim) = vnew(idim)
+          core_jp(ipart1, idim) = jnew(idim)
+          core_jp(ipart2, idim) = jnew(idim)
+       end do
+       marker_changed_d(id1) = .true.
+       marker_changed_d(id2) = .true.
+       marker_exists_d(id2) = .false.
+    end do
+  end subroutine core_merger_replay_kernel
+  ! =========================================================================
+
+  ! =========================================================================
+  !> Core merger: a merged core with mass counts as having accreted at this step.
+  attributes(global) subroutine core_merger_nacc_kernel(nactive, nstep_coarse)
+    implicit none
+    integer(kind=4), intent(in), value :: nactive, nstep_coarse
+
+    integer :: marker, ipart
+
+    marker = (blockIdx%x - 1) * blockDim%x + threadIdx%x
+    if (marker > nactive) return
+    if (.not. marker_changed_d(marker)) return
+
+    ipart = marker_row_d(marker)
+    if (core_mp(ipart) > 0.0_dp) core_nacc(ipart) = nstep_coarse
+  end subroutine core_merger_nacc_kernel
+  ! =========================================================================
+
+  ! =========================================================================
+  !> Grow the record arrays of the core merger to n records.
+  subroutine core_merger_record_capacity(n)
+    implicit none
+    integer, intent(in) :: n
+
+    if (allocated(record_key_d)) then
+       if (size(record_key_d) >= n) return
+       deallocate(record_key_d, record_key_sorted_d, record_idx_d, record_idx_sorted_d, record_npair_d)
+    endif
+    allocate(record_key_d(1:n), record_key_sorted_d(1:n))
+    allocate(record_idx_d(1:n), record_idx_sorted_d(1:n), record_npair_d(1:n))
+  end subroutine core_merger_record_capacity
+  ! =========================================================================
+
+  ! =========================================================================
+  !> Grow the pair arrays of the core merger to n pairs.
+  subroutine core_merger_pair_capacity(n)
+    implicit none
+    integer, intent(in) :: n
+
+    if (allocated(pair_key_d)) then
+       if (size(pair_key_d) >= n) return
+       deallocate(pair_key_d, pair_key_sorted_d, pair_idx_d, pair_idx_sorted_d)
+    endif
+    allocate(pair_key_d(1:n), pair_key_sorted_d(1:n))
+    allocate(pair_idx_d(1:n), pair_idx_sorted_d(1:n))
+  end subroutine core_merger_pair_capacity
+  ! =========================================================================
+
+  ! =========================================================================
+  ! Host Driver: core merger of level ilevel, nslot markers kept per cell.
+  ! Mirrors core_merger in core_merger.f90 on one rank.
+  ! Written by Daniel Han (mini-ramses version October 2026).
+  ! =========================================================================
+  subroutine gpu_core_merger(sim, ilevel, nslot)
+    use nvtx
+    use iso_c_binding, only: c_loc
+    use constants, only: yr2sec
+    use ramses_commons, only: ramses_t
+    use cub_module, only: radix_sort
+    use cub_inclusive_scan_mod, only: cub_inclusive_sum
+    use gpu_runner, only: hash_key, hash_val, ckey_max, key_off, box_ckey_min, box_ckey_max, &
+         & periodic, prefix_sum, gpu_scan
+    implicit none
+    type(ramses_t) :: sim
+    integer, intent(in) :: ilevel, nslot
+
+    integer(kind=4) :: head_idx, num_parts, nactive, nsearch, nnei, nrecord, npair
+    integer(kind=4), device :: nactive_d
+    integer(kind=8) :: nrecord8
+    integer :: num_threads, num_blocks
+    real(kind=8) :: dx_loc, merge_radius, t_merge
+    real(kind=8) :: scale_l, scale_t, scale_d, scale_v, scale_nH, scale_T2
+
+    associate(r=>sim%r, g=>sim%g, m=>sim%m, p=>sim%core)
+
+    if (r%core_merging_timescale <= 0.0d0) return
+
+    num_parts = p%tailp(ilevel) - p%headp(ilevel) + 1
+    if (num_parts < 2) return
+    head_idx = p%headp(ilevel)
+
+    nsearch = r%core_merger_search_order
+    nnei = (2*nsearch + 1)**ndim
+    dx_loc = r%boxlen/2**ilevel
+    merge_radius = dble(nsearch)*dx_loc
+    call units(sim%r, sim%g, scale_l, scale_t, scale_d, scale_v, scale_nH, scale_T2)
+    ! tp and texp are proper times in 1/H0: convert yr with scale_t/aexp**2.
+    t_merge = r%core_merging_timescale*yr2sec/(scale_t/g%aexp**2)
+
+    if (.not. allocated(marker_row_d)) then
+       allocate(marker_row_d(1:r%ncoremax))
+       allocate(marker_exists_d(1:r%ncoremax), marker_changed_d(1:r%ncoremax))
+    endif
+
+    ! Step 1: Markers 1..nactive of the cores with mp>0, in row order
+    call nvtxStartRange("GPU Core Merger Markers", color=5)!red
+    num_threads = 128
+    num_blocks = (num_parts + num_threads - 1) / num_threads
+    call core_marker_flag_kernel<<<num_blocks, num_threads>>>(prefix_sum, head_idx, num_parts)
+    call GPU_Error_Check(__FILE__, __LINE__)
+    call gpu_scan(prefix_sum, head_idx, num_parts, nactive_d)
+    call core_marker_row_kernel<<<num_blocks, num_threads>>>(prefix_sum, head_idx, num_parts)
+    call GPU_Error_Check(__FILE__, __LINE__)
+    nactive = nactive_d
+    call nvtxEndRange()
+    if (nactive < 2) return
+
+    ! Step 2: One record per marker and stencil cell, sorted stably by cell
+    nrecord8 = int(nactive, kind=8) * nnei
+    if (nrecord8 * nslot > huge(1_4)) then
+       write(*,*) 'Error: core merger candidates of level', ilevel, ' exceed 2^31'
+       write(*,*) 'Decrease core_merger_search_order'
+       stop
+    endif
+    nrecord = int(nrecord8)
+    call core_merger_record_capacity(nrecord)
+    call nvtxStartRange("GPU Core Merger Records", color=5)!red
+    num_blocks = int((nrecord8 + num_threads - 1) / num_threads)
+    call core_merger_record_kernel<<<num_blocks, num_threads>>>( &
+         & hash_key, hash_val, m%hash_size, ckey_max, key_off, m%ngridmax, &
+         & box_ckey_min, box_ckey_max, periodic, &
+         & nrecord, nsearch, ilevel, &
+         & real(m%skip(1),kind=dp), real(m%skip(2),kind=dp), real(m%skip(3),kind=dp), &
+         & real(dx_loc,kind=dp))
+    call GPU_Error_Check(__FILE__, __LINE__)
+    call radix_sort(c_loc(record_key_d), c_loc(record_key_sorted_d), &
+         & c_loc(record_idx_d), c_loc(record_idx_sorted_d), 1, nrecord, 0, 64)
+    call nvtxEndRange()
+
+    ! Step 3: Candidate pairs of each cell, counted, then written and sorted
+    call nvtxStartRange("GPU Core Merger Pairs", color=5)!red
+    call core_merger_pair_kernel<<<num_blocks, num_threads>>>(nrecord, nnei, nslot, .false.)
+    call GPU_Error_Check(__FILE__, __LINE__)
+    call cub_inclusive_sum(c_loc(record_npair_d), 1, nrecord)
+    npair = record_npair_d(nrecord)
+    if (npair > 0) then
+       call core_merger_pair_capacity(npair)
+       call core_merger_pair_kernel<<<num_blocks, num_threads>>>(nrecord, nnei, nslot, .true.)
+       call GPU_Error_Check(__FILE__, __LINE__)
+       call radix_sort(c_loc(pair_key_d), c_loc(pair_key_sorted_d), &
+            & c_loc(pair_idx_d), c_loc(pair_idx_sorted_d), 1, npair, 0, 64)
+    endif
+    call nvtxEndRange()
+    if (npair == 0) return
+
+    ! Step 4: Merge the pairs in order and stamp nacc of the merged cores
+    call nvtxStartRange("GPU Core Merger Merge", color=5)!red
+    call core_merger_replay_kernel<<<1, 1>>>(npair, real(merge_radius,kind=dp), &
+         & real(t_merge,kind=dp), real(g%texp,kind=dp), periodic, &
+         & real(r%box_size(1),kind=dp), real(r%box_size(2),kind=dp), real(r%box_size(3),kind=dp))
+    call GPU_Error_Check(__FILE__, __LINE__)
+    num_blocks = (nactive + num_threads - 1) / num_threads
+    call core_merger_nacc_kernel<<<num_blocks, num_threads>>>(nactive, g%nstep_coarse)
+    call GPU_Error_Check(__FILE__, __LINE__)
+    call nvtxEndRange()
+
+    end associate
+  end subroutine gpu_core_merger
+  ! =========================================================================
+
+end module core_merger_device

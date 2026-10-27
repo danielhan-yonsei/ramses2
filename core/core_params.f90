@@ -175,10 +175,6 @@ contains
      nml_ok=.false.
   endif
   ! Core phases that are not on the GPU yet
-  if(core.and.core_merge)then
-     write(*,*)'Error: core_merge is not supported on GPU yet'
-     nml_ok=.false.
-  endif
   if(core.and.core_form)then
      write(*,*)'Error: core_form is not supported on GPU yet'
      nml_ok=.false.
