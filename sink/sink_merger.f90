@@ -14,7 +14,9 @@ module sink_merger_module
 
   real(kind=8), dimension(1:3, 1:ncollision_max) :: pos1, pos2
   real(kind=8), dimension(1:3, 1:ncollision_max) :: vel1, vel2
+  real(kind=8), dimension(1:3, 1:ncollision_max) :: spin1, spin2
   real(kind=8), dimension(1:ncollision_max) :: mass1, mass2
+  real(kind=8), dimension(1:ncollision_max) :: birth1, birth2
   integer, dimension(1:ncollision_max) :: id1, id2
   integer, dimension(1:ncollision_max) :: all_id1, all_id2
   logical, dimension(1:ncollision_max) :: exists1, exists2
@@ -419,6 +421,10 @@ contains
     pos2(1:3, 1:n_pairs) = 0.0d0
     vel1(1:3, 1:n_pairs) = 0.0d0
     vel2(1:3, 1:n_pairs) = 0.0d0
+    spin1(1:3, 1:n_pairs) = 0.0d0
+    spin2(1:3, 1:n_pairs) = 0.0d0
+    birth1(1:n_pairs) = 0.0d0
+    birth2(1:n_pairs) = 0.0d0
     owner1(1:n_pairs) = 0
     owner2(1:n_pairs) = 0
     local_id1(1:n_pairs) = 0
@@ -433,6 +439,8 @@ contains
              mass1(i) = p%mp(ipart)
              pos1(1:3, i) = p%xp(ipart, 1:3)
              vel1(1:3, i) = p%vp(ipart, 1:3)
+             spin1(1:3, i) = p%jp(ipart, 1:3)
+             birth1(i) = p%tp(ipart)
              owner1(i) = s%g%myid
              local_id1(i) = ipart
           endif
@@ -440,6 +448,8 @@ contains
              mass2(i) = p%mp(ipart)
              pos2(1:3, i) = p%xp(ipart, 1:3)
              vel2(1:3, i) = p%vp(ipart, 1:3)
+             spin2(1:3, i) = p%jp(ipart, 1:3)
+             birth2(i) = p%tp(ipart)
              owner2(i) = s%g%myid
              local_id2(i) = ipart
           endif
@@ -456,6 +466,12 @@ contains
 
     call MPI_ALLREDUCE(MPI_IN_PLACE, vel1, 3*n_pairs, MPI_DOUBLE_PRECISION, MPI_SUM, MPI_COMM_WORLD, ierr)
     call MPI_ALLREDUCE(MPI_IN_PLACE, vel2, 3*n_pairs, MPI_DOUBLE_PRECISION, MPI_SUM, MPI_COMM_WORLD, ierr)
+
+    call MPI_ALLREDUCE(MPI_IN_PLACE, spin1, 3*n_pairs, MPI_DOUBLE_PRECISION, MPI_SUM, MPI_COMM_WORLD, ierr)
+    call MPI_ALLREDUCE(MPI_IN_PLACE, spin2, 3*n_pairs, MPI_DOUBLE_PRECISION, MPI_SUM, MPI_COMM_WORLD, ierr)
+
+    call MPI_ALLREDUCE(MPI_IN_PLACE, birth1, n_pairs, MPI_DOUBLE_PRECISION, MPI_SUM, MPI_COMM_WORLD, ierr)
+    call MPI_ALLREDUCE(MPI_IN_PLACE, birth2, n_pairs, MPI_DOUBLE_PRECISION, MPI_SUM, MPI_COMM_WORLD, ierr)
 
     call MPI_ALLREDUCE(MPI_IN_PLACE, owner1, n_pairs, MPI_INTEGER, MPI_MAX, MPI_COMM_WORLD, ierr)
     call MPI_ALLREDUCE(MPI_IN_PLACE, owner2, n_pairs, MPI_INTEGER, MPI_MAX, MPI_COMM_WORLD, ierr)
@@ -568,7 +584,7 @@ contains
   !==============================================================================
   subroutine execute_mergers(s, p, n_total)
     use ramses_commons, only: ramses_t
-    use pm_commons, only: part_t
+    use pm_commons, only: part_t, cross
     implicit none
     type(ramses_t)::s
     type(part_t)::p
@@ -576,8 +592,8 @@ contains
 
     integer::i, j, myrank, idim
     integer::id_keep, id_delete
-    real(kind=8)::m1, m2, total_mass
-    real(kind=8),dimension(1:3)::com_position, com_velocity, rel
+    real(kind=8)::m1, m2, total_mass, tpnew
+    real(kind=8),dimension(1:3)::com_position, com_velocity, rel, jnew
 
     myrank = s%g%myid
 
@@ -608,6 +624,11 @@ contains
           endif
        end do
        com_velocity(1:3) = (m1 * vel1(1:3, i) + m2 * vel2(1:3, i)) / total_mass
+       ! Spins plus the orbital angular momentum about the centre of mass,
+       ! m1*m2/M * rel x (v2-v1), per unit merged mass
+       jnew(1:3) = (m1 * spin1(1:3, i) + m2 * spin2(1:3, i) &
+            & + m1 * m2 / total_mass * cross(rel(1:3), vel2(1:3, i) - vel1(1:3, i))) / total_mass
+       tpnew = min(birth1(i), birth2(i))
 
 #if NDIM==3
        ! Each CPU only updates the sinks it owns
@@ -617,6 +638,8 @@ contains
              p%mp(j) = total_mass
              p%xp(j,1:3) = com_position(1:3)
              p%vp(j,1:3) = com_velocity(1:3)
+             p%jp(j,1:3) = jnew(1:3)
+             p%tp(j) = tpnew
           endif
        endif
        if(owner2(i) == myrank) then
@@ -625,6 +648,7 @@ contains
              p%mp(j) = 0.0d0
              p%xp(j,1:3) = com_position(1:3)
              p%vp(j,1:3) = com_velocity(1:3)
+             p%jp(j,1:3) = jnew(1:3)
              p%tm(j)     = s%g%texp
              p%idm(j)    = id_keep
              write(*, '(" Sink ",I0," merged into sink ",I0)') id_delete, id_keep

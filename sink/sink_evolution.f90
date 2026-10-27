@@ -554,8 +554,9 @@ contains
     ! limiting total accreted mass to 75% of the weighted mass of the accretion region (c.f. Beckmann+2018)
     dMBH_overdt = min(dMBH_overdt, 0.75d0*rho_gas*vol_loc*dble(nBHnei) / g%dtnew(ilevel))
 
-    if(((g%t - p%tp(ipart)).lt.r%t_start_black_hole).and.r%t_start_black_hole.gt.0.0)then
-       dMBH_overdt = exp(g%t - p%tp(ipart) - r%t_start_black_hole) * dMBH_overdt
+    ! tp is a proper time: compare it with texp, not with the code time t
+    if(((g%texp - p%tp(ipart)).lt.r%t_start_black_hole).and.r%t_start_black_hole.gt.0.0)then
+       dMBH_overdt = exp(g%texp - p%tp(ipart) - r%t_start_black_hole) * dMBH_overdt
     end if
 
     if(r%manual_accretion_rate.gt.0.0d0)then
