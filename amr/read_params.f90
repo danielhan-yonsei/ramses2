@@ -1450,7 +1450,12 @@ subroutine m_read_params(pst)
      write(*,*)'Error: a non-periodic box (periodic=.false. or nbound>0) is not supported on GPU'
      nml_ok=.false.
   endif
-  ! The GPU keeps no core peak ids
+  ! The GPU core finder writes no clump catalogue and keeps no core peak ids
+  if(s%r%core_form.and.(output_peak_grid.or.output_peak_part.or.output_peak_star.or. &
+       & output_peak_sink.or.output_peak_tree.or.output_peak_core))then
+     write(*,*)'Error: the core clump catalogue (output_peak_*) is not supported on GPU'
+     nml_ok=.false.
+  endif
   if(s%r%core.and.output_peak_core)then
      write(*,*)'Error: output_peak_core is not supported on GPU'
      nml_ok=.false.

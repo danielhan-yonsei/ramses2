@@ -6,6 +6,9 @@
 #endif
 module core_formation_module
   use amr_parameters, only: ndim
+#ifdef _CUDA
+  use phew_device, only: gpu_allocate_phew, gpu_core_clump, gpu_core_formation
+#endif
 
   integer,parameter::CORE_CLUMP_FIND=1
   integer,parameter::CORE_CLUMP_RESTORE=2
@@ -110,6 +113,9 @@ recursive subroutine r_core_clump(pst,action,input_size)
   integer::action
 
   integer::rID,n
+#ifdef _CUDA
+  real(kind=8)::threshold
+#endif
 
   if(pst%nLower>0)then
      rID = mdl_send_request(pst%s%mdl,MDL_CORE_CLUMP,pst%iUpper+1,input_size,0,action)
@@ -123,7 +129,12 @@ recursive subroutine r_core_clump(pst,action,input_size)
         allocate(flag1_keep(1:twotondim,1:n),flag2_keep(1:twotondim,1:n))
         flag1_keep=pst%s%m%flag1(:,1:n)
         flag2_keep=pst%s%m%flag2(:,1:n)
+#ifdef _CUDA
+        call core_clump_collection_threshold(pst%s%r,pst%s%g,threshold)
+        call gpu_core_clump(pst%s,threshold)
+#else
         call core_clump(pst%s)
+#endif
      case(CORE_CLUMP_RESTORE)
         n=size(flag1_keep,2)
         pst%s%m%flag1(:,1:n)=flag1_keep
@@ -335,7 +346,11 @@ recursive subroutine r_core_formation(pst,nstep_coarse,input_size,output,output_
      call mdl_get_reply(pst%s%mdl,rID,output_size,next_output)
      output%mass=output%mass+next_output%mass
   else
+#ifdef _CUDA
+     call gpu_core_formation(pst%s,nstep_coarse,output%mass)
+#else
      call core_formation(pst%s%mdl,pst%s%r,pst%s%g,pst%s%m,pst%s%core,pst%s%c,nstep_coarse,output%mass)
+#endif
   endif
 
 end subroutine r_core_formation

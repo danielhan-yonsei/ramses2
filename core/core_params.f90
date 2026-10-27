@@ -169,14 +169,21 @@ contains
   endif
 
 #ifdef _CUDA
-  ! The GPU core path runs on one rank
+  ! The GPU core path runs on one rank and forms cores from the gas alone
   if(core.and.s%g%ncpu>1)then
      write(*,*)'Error: cores on more than one rank are not supported on GPU'
      nml_ok=.false.
   endif
-  ! Core phases that are not on the GPU yet
-  if(core.and.core_form)then
-     write(*,*)'Error: core_form is not supported on GPU yet'
+  if(core_form.and.rho_type_core/=4)then
+     write(*,*)'Error: rho_type_core/=4 is not supported on GPU'
+     nml_ok=.false.
+  endif
+  if(core_form.and.core_saddle_threshold>0d0)then
+     write(*,*)'Error: core_saddle_threshold>0 is not supported on GPU'
+     nml_ok=.false.
+  endif
+  if(core.and.output_core_clump)then
+     write(*,*)'Error: output_core_clump is not supported on GPU'
      nml_ok=.false.
   endif
 #endif
