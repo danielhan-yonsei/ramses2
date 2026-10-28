@@ -49,6 +49,8 @@ We describe the meaning and default values of the namelist variables in each of 
 
 [Sink particle parameters](./sink_params.md): Parameters controlling sink particle formation, accretion and AGN feedback.
 
+[Core particle parameters](./core_params.md): Parameters controlling core particle formation, accretion, merging and conversion into stars.
+
 [Lightcone parameters](./lightcone_params.md): Parameters controlling the light cone output in cosmological simulations.
 
 [Movie parameters](./movie_params.md): Parameters controlling the generation of movie frames during simulation runs.
