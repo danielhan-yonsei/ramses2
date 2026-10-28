@@ -487,6 +487,7 @@ module amr_commons
      logical::momentum_conserving = .false.
      real(kind=8)::eddington_floor = -1 ! Accretion rate floor below which nothing happens
      real(kind=8)::manual_accretion_rate = -1 ! Manual accretion rate (fraction of Eddington)
+     logical::sink_mechanical = .false. ! Use the 56-point multi-level stencil for sink evolution
 
      ! Core accretion parameters
      integer::core_accretion_type=2 ! 0: none, 2: flux accretion

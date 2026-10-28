@@ -676,48 +676,52 @@ contains
     end associate
 #endif
 #endif
-  contains
-    ! Routine to return alpha, defined as rho/rho_inf, for a critical
-    ! Bondi accretion solution. The argument is x = r / r_Bondi.
-    ! This is from Krumholz et al. 2004 (AJC)
-    REAL(kind=8) function bondi_alpha(x)
-      implicit none
-      REAL(kind=8) x
-      REAL(kind=8), PARAMETER :: XMIN=0.01d0, XMAX=2.0d0
-      INTEGER, PARAMETER :: NTABLE=51
-      REAL(kind=8) lambda_c, xtable, xtablep1, alpha_exp
-      integer idx
-      !     Table of alpha values. These correspond to x values that run from
-      !     0.01 to 2.0 with uniform logarithmic spacing. The reason for
-      !     this choice of range is that the asymptotic expressions are
-      !     accurate to better than 2% outside this range.
-      REAL(kind=8), PARAMETER, DIMENSION(NTABLE) :: alphatable = (/ &
-           820.254, 701.882, 600.752, 514.341, 440.497, 377.381, 323.427, &
-           277.295, 237.845, 204.1, 175.23, 150.524, 129.377, 111.27, 95.7613, &
-           82.4745, 71.0869, 61.3237, 52.9498, 45.7644, 39.5963, 34.2989, &
-           29.7471, 25.8338, 22.4676, 19.5705, 17.0755, 14.9254, 13.0714, &
-           11.4717, 10.0903, 8.89675, 7.86467, 6.97159, 6.19825, 5.52812, &
-           4.94699, 4.44279, 4.00497, 3.6246, 3.29395, 3.00637, 2.75612, &
-           2.53827, 2.34854, 2.18322, 2.03912, 1.91344, 1.80378, 1.70804, &
-           1.62439 /)
-      !     Define a constant that appears in these formulae
-      lambda_c    = exp(1.5d0) / 4
-      !     Deal with the off-the-table cases
-      if (x .le. XMIN) then
-         bondi_alpha = lambda_c / sqrt(2d0 * x**ndim)
-      else if (x .ge. XMAX) then
-         bondi_alpha = exp(1d0/x)
-      else
-         !     We are on the table
-         idx = floor ((NTABLE-1) * log(x/XMIN) / log(XMAX/XMIN))
-         xtable = exp(log(XMIN) + idx*log(XMAX/XMIN)/(NTABLE-1))
-         xtablep1 = exp(log(XMIN) + (idx+1)*log(XMAX/XMIN)/(NTABLE-1d0))
-         alpha_exp = log(x/xtable) / log(xtablep1/xtable)
-         !     Note the extra +1s below because of fortran 1 offset arrays
-         bondi_alpha = alphatable(idx+1) * (alphatable(idx+2)/alphatable(idx+1))**alpha_exp
-      end if
-    end function bondi_alpha
   end subroutine sink_accretion
+  !##############################################################################
+  !##############################################################################
+  !##############################################################################
+  !##############################################################################
+  ! Routine to return alpha, defined as rho/rho_inf, for a critical
+  ! Bondi accretion solution. The argument is x = r / r_Bondi.
+  ! This is from Krumholz et al. 2004 (AJC)
+  REAL(kind=8) function bondi_alpha(x)
+    use amr_parameters, only: ndim
+    implicit none
+    REAL(kind=8) x
+    REAL(kind=8), PARAMETER :: XMIN=0.01d0, XMAX=2.0d0
+    INTEGER, PARAMETER :: NTABLE=51
+    REAL(kind=8) lambda_c, xtable, xtablep1, alpha_exp
+    integer idx
+    !     Table of alpha values. These correspond to x values that run from
+    !     0.01 to 2.0 with uniform logarithmic spacing. The reason for
+    !     this choice of range is that the asymptotic expressions are
+    !     accurate to better than 2% outside this range.
+    REAL(kind=8), PARAMETER, DIMENSION(NTABLE) :: alphatable = (/ &
+         820.254, 701.882, 600.752, 514.341, 440.497, 377.381, 323.427, &
+         277.295, 237.845, 204.1, 175.23, 150.524, 129.377, 111.27, 95.7613, &
+         82.4745, 71.0869, 61.3237, 52.9498, 45.7644, 39.5963, 34.2989, &
+         29.7471, 25.8338, 22.4676, 19.5705, 17.0755, 14.9254, 13.0714, &
+         11.4717, 10.0903, 8.89675, 7.86467, 6.97159, 6.19825, 5.52812, &
+         4.94699, 4.44279, 4.00497, 3.6246, 3.29395, 3.00637, 2.75612, &
+         2.53827, 2.34854, 2.18322, 2.03912, 1.91344, 1.80378, 1.70804, &
+         1.62439 /)
+    !     Define a constant that appears in these formulae
+    lambda_c    = exp(1.5d0) / 4
+    !     Deal with the off-the-table cases
+    if (x .le. XMIN) then
+       bondi_alpha = lambda_c / sqrt(2d0 * x**ndim)
+    else if (x .ge. XMAX) then
+       bondi_alpha = exp(1d0/x)
+    else
+       !     We are on the table
+       idx = floor ((NTABLE-1) * log(x/XMIN) / log(XMAX/XMIN))
+       xtable = exp(log(XMIN) + idx*log(XMAX/XMIN)/(NTABLE-1))
+       xtablep1 = exp(log(XMIN) + (idx+1)*log(XMAX/XMIN)/(NTABLE-1d0))
+       alpha_exp = log(x/xtable) / log(xtablep1/xtable)
+       !     Note the extra +1s below because of fortran 1 offset arrays
+       bondi_alpha = alphatable(idx+1) * (alphatable(idx+2)/alphatable(idx+1))**alpha_exp
+    end if
+  end function bondi_alpha
   !##############################################################################
   !##############################################################################
   !##############################################################################

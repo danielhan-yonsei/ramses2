@@ -346,7 +346,7 @@ MODOBJ +=  multigrid_fine_coarse.o rho_fine.o upload.o init_xion.o \
 	 init_refine_ramses.o title.o units.o move_fine.o rho_ana.o \
 	 star_formation.o feedback.o clump_merger.o output_clump.o clump_finder.o \
 	 rt_star_feedback.o sink_formation.o tree_formation.o \
-	 sink_evolution.o sink_merger.o task_manager.o rt_step.o cr_step.o amr_step.o \
+	 sink_evolution.o sink_mechanical.o sink_merger.o task_manager.o rt_step.o cr_step.o amr_step.o \
 	 adaptive_loop.o write_gitinfo.o
 MODOBJ += core_params.o core_sf_support.o star_formation_common.o
 ifeq ($(COMPILER),NVHPC)

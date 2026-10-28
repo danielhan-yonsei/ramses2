@@ -548,6 +548,7 @@ subroutine m_read_params(pst)
   logical::momentum_conserving = .false.
   real(kind=8)::eddington_floor = -1 ! Accretion rate floor below which nothing happens
   real(kind=8)::manual_accretion_rate = -1 ! Manual accretion rate (fraction of Eddington)
+  logical::sink_mechanical = .false. ! Use the 56-point multi-level stencil for sink evolution
 
   ! Sink feedback parameters
   logical::agn = .false. ! Whether to activate AGN feedback around black hole/sink particles
@@ -737,7 +738,7 @@ subroutine m_read_params(pst)
        & ,eddington_cap,sink_b_spline_order,bondi_use_gas_mass,use_bondi_lambda &
        & ,t_start_black_hole,use_local_bondi_rate,static_sink &
        & ,sink_fix_mass,eddington_floor,mass_weighting,momentum_conserving &
-       & ,manual_accretion_rate
+       & ,manual_accretion_rate,sink_mechanical
   ! AGN Feedback parameters
   namelist/sink_feedback_params/agn,agn_feedback_radius,agn_weighting_scheme,epsilon_rad &
        & ,epsilon_radio,epsilon_quasar,momentum_boost,agn_fbk_mode_switch_threshold &
@@ -1359,6 +1360,19 @@ subroutine m_read_params(pst)
      nml_ok=.false.
   endif
 
+  ! The 56-point sink evolution only provides Bondi accretion
+  if(sink.and.sink_mechanical)then
+     if(accretion_type==2.or.accretion_type==3)then
+        write(*,*)'Error: sink_mechanical=.true. needs accretion_type = 0 or 1 (Bondi)'
+        write(*,*)'Currently accretion_type=',accretion_type
+        nml_ok=.false.
+     endif
+     if(use_local_bondi_rate)then
+        write(*,*)'Error: sink_mechanical=.true. does not support use_local_bondi_rate=.true.'
+        nml_ok=.false.
+     endif
+  endif
+
   ! Check that sink formation uses a valid density field
   if(sink_form)then
      if(rho_type_sink/=1.and.rho_type_sink/=2.and.rho_type_sink/=4)then
@@ -1395,6 +1409,11 @@ subroutine m_read_params(pst)
   ! The GPU sink evolution does not provide the high frequency sink dump
   if(sink.and.sink_delta_tout>0)then
      write(*,*)'Error: sink_delta_tout>0 (high frequency sink dump) is not supported on GPU'
+     nml_ok=.false.
+  endif
+  ! The 56-point sink evolution is not yet ported to the GPU
+  if(sink.and.sink_mechanical)then
+     write(*,*)'Error: sink_mechanical=.true. is not yet supported on GPU'
      nml_ok=.false.
   endif
   ! The GPU hydro has slope_type 0 to 3, and 0 to 2 under MHD
@@ -1976,6 +1995,7 @@ subroutine m_read_params(pst)
   s%r%momentum_conserving = momentum_conserving
   s%r%eddington_floor = eddington_floor
   s%r%manual_accretion_rate = manual_accretion_rate
+  s%r%sink_mechanical = sink_mechanical
 
   s%r%agn = agn
   s%r%agn_feedback_radius = agn_feedback_radius

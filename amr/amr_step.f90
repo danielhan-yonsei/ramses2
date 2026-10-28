@@ -42,6 +42,7 @@ recursive subroutine m_amr_step(pst,ilevel,icount,done)
   use cr_godunov_fine_module, only: r_set_crunew, r_conserve_cr_flux
   use cr_step_module, only: m_cr_step
   use sink_evolution_module, only: r_sink_evolution, out_accretion_t
+  use sink_mechanical_module, only: m_sink_mechanical
   use sink_merger_module, only: r_sink_merger
   use turb_driving, only: r_drive_turb
   use turb_hydro_module, only: m_turb_hydro
@@ -380,11 +381,30 @@ recursive subroutine m_amr_step(pst,ilevel,icount,done)
   ! Sink accretion and feedback
   !----------------------------
   if(r%sink)then
-     call m_timer('sink - evolution','start')
-     call r_sink_evolution(pst,ilevel,1,output_acc,2)
-     if(output_acc%mass>0)then
-        g%mass_sink_tot=g%mass_sink_tot+output_acc%mass
-     end if
+     if(r%sink_mechanical)then
+        ! Only at the finest level, over all time-synchronized levels
+        ok_fbk=.false.
+        if(ilevel==r%nlevelmax)then
+           ok_fbk=.true.
+        else
+           if(m%noct_tot(ilevel+1)==0)then
+              ok_fbk=.true.
+           endif
+        end if
+        if(ok_fbk)then
+           call m_timer('sink - evolution','start')
+           call m_sink_mechanical(pst,ilevel,output_acc%mass)
+           if(output_acc%mass>0)then
+              g%mass_sink_tot=g%mass_sink_tot+output_acc%mass
+           end if
+        endif
+     else
+        call m_timer('sink - evolution','start')
+        call r_sink_evolution(pst,ilevel,1,output_acc,2)
+        if(output_acc%mass>0)then
+           g%mass_sink_tot=g%mass_sink_tot+output_acc%mass
+        end if
+     endif
   end if
   call m_core_step(pst,core_state,CORE_PHASE_ACC_PREPARE,ilevel=ilevel)
 

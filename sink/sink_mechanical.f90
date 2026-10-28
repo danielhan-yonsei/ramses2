@@ -1,0 +1,616 @@
+module sink_mechanical_module
+  use sink_evolution_module, only: out_accretion_t, bondi_alpha, dynamical_friction, &
+       & dump_sink_data_fine, dump_sink_data_fine_AGN
+contains
+  !##############################################################################
+  !##############################################################################
+  !##############################################################################
+  !##############################################################################
+  subroutine m_sink_mechanical(pst,ilevel,macc)
+    use mdl_module
+    use ramses_commons, only: pst_t
+    use mdl_parameters
+    implicit none
+    type(pst_t)::pst
+    integer::ilevel
+    real(kind=8)::macc
+    ! This is the master routine calling the 56-point sink evolution.
+    ! Note that it loops over all levels that are time-synchronized,
+    ! as m_mechanical_feedback does.
+    integer::i
+    type(out_accretion_t)::output_acc
+
+    macc=0d0
+    do i=ilevel,pst%s%r%levelmin,-1
+       call r_sink_mechanical(pst,i,1,output_acc,2)
+       macc=macc+output_acc%mass
+       if(i>pst%s%r%levelmin)then
+          if(pst%s%r%nsubcycle(i-1)==2.and.pst%s%g%isubcycle(i)==1)exit
+       endif
+    end do
+
+  end subroutine m_sink_mechanical
+  !##############################################################################
+  !##############################################################################
+  !##############################################################################
+  !##############################################################################
+  recursive subroutine r_sink_mechanical(pst,ilevel,input_size,output,output_size)
+    use mdl_module
+    use ramses_commons, only: pst_t
+    use mdl_parameters
+    implicit none
+    type(pst_t)::pst
+    integer,VALUE::input_size
+    integer::output_size
+    type(out_accretion_t)::output,next_output
+
+    integer::ilevel
+    integer::rID
+
+    if(pst%nLower>0)then
+       rID = mdl_send_request(pst%s%mdl,MDL_SINK_MECHANICAL,pst%iUpper+1,input_size,output_size,ilevel)
+       call r_sink_mechanical(pst%pLower,ilevel,input_size,output,output_size)
+       call mdl_get_reply(pst%s%mdl,rID,output_size,next_output)
+       output%mass=output%mass+next_output%mass
+    else
+       call sink_mechanical(pst%s,pst%s%sink,ilevel,output%mass)
+    endif
+
+  end subroutine r_sink_mechanical
+  !##############################################################################
+  !##############################################################################
+  !##############################################################################
+  !##############################################################################
+  subroutine sink_mechanical(s,p,ilevel,macc_loc)
+    use constants
+    use amr_parameters, only: ndim, twotondim
+    use hydro_parameters, only: nvar, nener
+    use ramses_commons, only: ramses_t
+    use pm_commons, only: part_t, cross
+    use params_module
+    use nbors_utils
+    use cache_commons
+    use cache
+    use marshal, only: pack_fetch_refine,unpack_fetch_refine
+    use boundaries, only: init_bound_refine
+    use godunov_fine_module, only: init_flush_godunov,pack_flush_godunov,unpack_flush_godunov
+    use hilbert
+    implicit none
+    type(ramses_t)::s
+    type(part_t)::p
+    integer::ilevel
+    real(kind=8)::macc_loc
+    !==================================================================
+    ! This is the RAMSES routine for sink evolution using the 56-point
+    ! stencil of the mechanical supernova feedback. Gas properties are
+    ! sampled in uold and accretion and AGN feedback are applied to unew
+    ! across levels ilevel-1, ilevel and ilevel+1, so that sinks do not
+    ! need sink_refine=.true.
+    !==================================================================
+    ! Parameters
+    ! Number of sample points (4x4x4 half cells minus the 8 corners)
+    integer,parameter::nSKnei=56
+    ! Half opening angle of the radio mode jet in degrees
+    real(kind=8),parameter::agn_jet_half_angle=60
+    ! Local variables
+    real(kind=8),dimension(1:3,1:nSKnei)::xSKnei,vSKnei
+    logical,dimension(1:nSKnei)::shell
+    integer,dimension(1:nSKnei)::igrid_nbor,icell_nbor,level_nbor
+    real(kind=8),dimension(1:nSKnei)::d_nbor,vol_nbor,w_nbor,mu_nbor
+    real(kind=8),dimension(1:3,1:nSKnei)::v_nbor
+    real(kind=8)::scale_nH,scale_T2,scale_l,scale_d,scale_t,scale_v,factG,unit_yr
+    real(kind=8)::dx_loc,vol_loc,dx_cell,vol_cell,vol_pt,current_time
+    real(kind=8)::lambda_sonic,cos_jet,r_acc
+    real(kind=8)::x,y,z,rr
+    integer,dimension(1:ndim)::ckey,ckey_nbor
+    integer(kind=8),dimension(0:ndim)::hash_cell,hash_nbor
+    integer::i,j,k,ind,ipart,idim,ivar,istep,igrid,icell,igridn,icelln,ilev_cell
+    real(kind=8),dimension(1:3)::xcen,xnei,xsink,x_rel,vv,v_rel,jet_direction,p_jet
+    real(kind=8)::d,e,ethermal,cs,dm,dvol
+    real(kind=8)::rho_gas,cs_gas,m_gas,rho_av_all,rho_inf
+    real(kind=8),dimension(1:ndim)::vel_gas
+    real(kind=8)::velocity,v_bondi,bondi_mass,r2_sink
+    real(kind=8)::dMBH_overdt,dMED_overdt,dt_loc
+    real(kind=8)::m_acc
+    real(kind=8),dimension(1:3)::x_acc,p_acc,l_acc
+    real(kind=8)::acc_ratio,energy_agn,fbk_ener_agn,fbk_mom_agn
+    real(kind=8)::w_tot,w_plus,w_minus,de
+    logical::quasar_mode,ok_level,ok_leaf,output_file
+    type(msg_large_realdp)::dummy_large_realdp
+#if NENER>0
+    integer::irad
+#endif
+#ifdef MHD
+    real(kind=8)::bx,by,bz,emag
+#endif
+
+#ifdef HYDRO
+#if NDIM==3
+    associate(r=>s%r,g=>s%g,m=>s%m,mdl=>s%mdl)
+
+    if(g%myid==1.and.r%verbose)write(*,*)'Entering sink_mechanical...'
+
+    ! Arrays to define the sample points (center=[0,0,0])
+    ! normalized to dx = 1 = size of the host cell in which the sink sits
+    ! from -0.75 to 0.75
+    ind=0
+    do k=1,4
+       do j=1,4
+          do i=1,4
+             if((i==1.or.i==4).and.(j==1.or.j==4).and.(k==1.or.k==4))cycle ! edge
+             ind=ind+1
+             x=(i-1)+0.5d0-2
+             y=(j-1)+0.5d0-2
+             z=(k-1)+0.5d0-2
+             rr=sqrt(x*x+y*y+z*z)
+             xSKnei(1,ind)=x/2d0
+             xSKnei(2,ind)=y/2d0
+             xSKnei(3,ind)=z/2d0
+             vSKnei(1,ind)=x/rr
+             vSKnei(2,ind)=y/rr
+             vSKnei(3,ind)=z/rr
+             shell(ind)=.not.((i==2.or.i==3).and.(j==2.or.j==3).and.(k==2.or.k==3)) ! not centre
+          end do
+       end do
+    end do
+
+    ! Conversion factor from user units to cgs units
+    call units(r,g,scale_l,scale_t,scale_d,scale_v,scale_nH,scale_T2)
+
+    ! Gravitational constant
+    factG=1
+    if(r%cosmo)factG=3d0/4d0/twopi*g%omega_m*g%aexp
+
+    ! Bondi sonic constant
+    if(r%use_bondi_lambda)then
+       if(abs(r%gamma - 1).le.0.01)then
+          lambda_sonic = 0.25d0*exp(1.5d0)
+       else if(abs(r%gamma - 5.0d0/3.0d0).le.0.01)then
+          lambda_sonic = 0.25d0
+       else
+          lambda_sonic = 0.5d0**((r%gamma + 1)/(2d0*(r%gamma - 1))) &
+               & * (0.25d0*(5d0-3d0*r%gamma))**(-(5d0-3d0*r%gamma)/(2d0*(r%gamma - 1)))
+       end if
+    else
+       lambda_sonic = 1.0d0
+    end if
+
+    ! Cosine of the radio mode jet half opening angle
+    cos_jet=cos(pi/180d0*agn_jet_half_angle)
+
+    ! Mesh spacing in that level
+    dx_loc=r%boxlen/2**ilevel
+    vol_loc=dx_loc**ndim
+
+    ! Time step of the sinks in that level
+    dt_loc=g%dtnew(ilevel)
+
+    !-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
+    ! Check if high frequency dump
+    !-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
+    output_file = .false.
+    if(r%sink_delta_tout>0)then
+       unit_yr = 3600*24*365.25
+       ! proper time in Myr (careful in cosmology it is negative)
+       current_time = g%texp * scale_t / g%aexp**2 / unit_yr / 1e6
+       istep = int(current_time / r%sink_delta_tout)
+       if (.not. p%init_counter) then
+          p%step_counter = istep - 1
+          p%init_counter = .true.
+       endif
+       if(istep > p%step_counter)then
+          p%step_counter = istep
+          output_file = .true.
+       endif
+    endif
+
+    ! Open cache for array uold (fetch) and unew (flush)
+    call open_cache(mdl, m, pack_size=storage_size(dummy_large_realdp)/32, &
+         pack=pack_fetch_refine, unpack=unpack_fetch_refine, &
+         init=init_flush_godunov, flush=pack_flush_godunov, &
+         combine=unpack_flush_godunov, bound=init_bound_refine)
+
+    ! Loop over sink particles
+    macc_loc=0d0
+    do ipart=p%headp(ilevel),p%tailp(ilevel)
+
+       ! Skip zero-mass (merged/defunct) sinks
+       if(p%mp(ipart)<=0.0d0)cycle
+
+       ok_level=.true.
+
+       ! Find parent cell at level ilevel
+       do idim=1,ndim
+          ckey(idim)=int((p%xp(ipart,idim)+m%skip(idim))/dx_loc)
+          xcen(idim)=ckey(idim)+0.5
+       end do
+
+       ! Cell size at level ilevel
+       dx_cell=dx_loc
+
+       ! Get parent cell at level ilevel using cache
+       hash_cell(0)=ilevel+1
+       hash_cell(1:ndim)=ckey(1:ndim)
+       call get_parent_cell(s,hash_cell,igrid,icell,flush_cache=.true.,fetch_cache=.true.)
+
+       ! If cell does not exist at current level, then find cell at coarser level
+       if(igrid==0)then
+
+          ! NGP at level ilevel-1
+          do idim=1,ndim
+             ckey(idim)=int((p%xp(ipart,idim)+m%skip(idim))/dx_loc/2)
+             xcen(idim)=ckey(idim)+0.5
+          end do
+
+          ! Cell size at level ilevel-1
+          dx_cell=dx_loc*2
+
+          ! Get parent cell at level ilevel-1 using cache
+          hash_cell(0)=ilevel
+          hash_cell(1:ndim)=ckey(1:ndim)
+          call get_parent_cell(s,hash_cell,igrid,icell,flush_cache=.true.,fetch_cache=.true.)
+          if(igrid==0)ok_level=.false.
+
+       end if
+
+       if(.not. ok_level)then
+          write(*,*)"Something went wrong in sink_mechanical"
+          write(*,*)"Current level grid and coarser grid both dont exist..."
+          stop
+       endif
+
+       ! Lock grid in cache
+       call lock_cache(m,igrid)
+
+       ok_leaf = .not. m%grid(igrid)%refined(icell)
+       if(.not. ok_leaf)then
+          write(*,*)"Something went wrong in sink_mechanical"
+          write(*,*)"Cell should be a leaf cell..."
+          stop
+       endif
+
+       ! Host cell properties
+       ilev_cell=hash_cell(0)-1
+       vol_cell=dx_cell**ndim
+       vol_pt=vol_cell/dble(twotondim)
+       xsink(1:ndim)=(p%xp(ipart,1:ndim)+m%skip(1:ndim))/dx_cell
+
+       ! Initialize outputs so drag, feedback and dumps
+       ! read defined values even when accretion is disabled
+       dMBH_overdt=0.0d0; dMED_overdt=0.0d0; rho_inf=0.0d0
+       fbk_mom_agn=0.0d0; fbk_ener_agn=0.0d0
+
+       !-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
+       ! Collect all sample points from hash table
+       !-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
+       rho_gas=0d0; vel_gas=0d0; cs_gas=0d0; m_gas=0d0; rho_av_all=0d0
+       do j=1,nSKnei
+
+          ! Compute sample point coordinates
+          xnei(1:ndim)=xcen(1:ndim)+xSKnei(1:ndim,j)
+          ! Periodic boundary conditions
+          do idim=1,ndim
+             if(r%periodic(idim))then
+                if(xnei(idim)< m%box_ckey_min(idim,hash_cell(0)))xnei(idim)=xnei(idim)-m%box_ckey_min(idim,hash_cell(0))+m%box_ckey_max(idim,hash_cell(0))
+                if(xnei(idim)>=m%box_ckey_max(idim,hash_cell(0)))xnei(idim)=xnei(idim)+m%box_ckey_min(idim,hash_cell(0))-m%box_ckey_max(idim,hash_cell(0))
+             endif
+          end do
+
+          ! Get neighboring cell at current level
+          ckey_nbor(1:ndim)=int(xnei(1:ndim))
+          hash_nbor(0)=hash_cell(0)
+          hash_nbor(1:ndim)=ckey_nbor(1:ndim)
+          call get_parent_cell(s,hash_nbor,igridn,icelln,flush_cache=.true.,fetch_cache=.true.)
+
+          ! If missing, get neighboring cell at current level - 1
+          if(igridn==0)then
+             ckey_nbor(1:ndim)=int(xnei(1:ndim)/2.0)
+             hash_nbor(0)=hash_cell(0)-1
+             hash_nbor(1:ndim)=ckey_nbor(1:ndim)
+             call get_parent_cell(s,hash_nbor,igridn,icelln,flush_cache=.true.,fetch_cache=.true.)
+
+          ! If refined, get neighboring cell at current level + 1
+          else if (m%grid(igridn)%refined(icelln))then
+             ckey_nbor(1:ndim)=int(xnei(1:ndim)*2.0)
+             hash_nbor(0)=hash_cell(0)+1
+             hash_nbor(1:ndim)=ckey_nbor(1:ndim)
+             call get_parent_cell(s,hash_nbor,igridn,icelln,flush_cache=.true.,fetch_cache=.true.)
+          endif
+
+          ! Lock grid in cache
+          call lock_cache(m,igridn)
+
+          igrid_nbor(j) = igridn
+          icell_nbor(j) = icelln
+          level_nbor(j) = hash_nbor(0)-1
+          vol_nbor(j) = vol_cell*dble(twotondim)**(ilev_cell-level_nbor(j))
+
+          ! Get physical information
+          d     = max(dble(m%uold(icelln,1,igridn)),r%smallr)
+          vv(1) = m%uold(icelln,2,igridn)/d
+          vv(2) = m%uold(icelln,3,igridn)/d
+          vv(3) = m%uold(icelln,4,igridn)/d
+          e     = m%uold(icelln,5,igridn)
+
+          ! We need to remove all non-thermal energies
+#ifdef MHD
+          bx=0.5d0*(m%bold(icelln,1,igridn) + m%bold(icelln,4,igridn))
+          by=0.5d0*(m%bold(icelln,2,igridn) + m%bold(icelln,5,igridn))
+          bz=0.5d0*(m%bold(icelln,3,igridn) + m%bold(icelln,6,igridn))
+          emag=0.5d0*(bx**2+by**2+bz**2)
+          e = e - emag
+#endif
+#if NENER>0
+          do irad=1,nener
+             e = e - m%uold(icelln,5+irad,igridn)
+          end do
+#endif
+          ethermal = (e - 0.5d0*d*sum(vv(:)**2)) / d
+          cs       = sqrt(max(dble(r%gamma)*(dble(r%gamma)-1.0d0)*ethermal,dble(r%smallc)**2) &
+               &   * dble(r%acc_sink_boost)**(-2d0/3d0))
+
+          d_nbor(j)     = d
+          v_nbor(1:3,j) = vv(1:3)
+
+          ! Add to average information (each point has the same volume)
+          rho_gas         = rho_gas         + d          / dble(nSKnei)
+          vel_gas(1:ndim) = vel_gas(1:ndim) + vv(1:ndim) / dble(nSKnei)
+          cs_gas          = cs_gas          + cs         / dble(nSKnei)
+          m_gas           = m_gas           + d          * vol_pt
+#ifdef GRAV
+          rho_av_all      = rho_av_all      + m%rho(icelln,igridn) / dble(nSKnei)
+#endif
+       end do
+
+       !-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
+       ! Compute overall accretion rate
+       !-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
+       if(r%accretion_type==1)then
+
+          ! Bondi velocity
+          v_rel(1:ndim) = vel_gas(1:ndim) - p%vp(ipart,1:ndim)
+          if(r%bondi_use_vrel)then
+             velocity   = norm2(v_rel(1:ndim))
+             v_bondi    = sqrt(velocity**2 + cs_gas**2)
+          else
+             v_bondi    = cs_gas
+          end if
+
+          ! Bondi mass
+          if(r%bondi_use_gas_mass)then
+             bondi_mass = p%mp(ipart) + m_gas
+          else
+             bondi_mass = p%mp(ipart)
+          end if
+
+          ! Bondi radius
+          r2_sink     = (factG * bondi_mass / v_bondi**2)**2
+
+          ! Density at infinity (using extrapolation from the radius
+          ! of the sphere with the stencil volume 7 dx^3)
+          if(r%use_rho_inf)then
+             r_acc   = (21d0/(4d0*pi))**(1d0/3d0)*dx_cell
+             rho_inf = rho_gas / (bondi_alpha(r_acc/(r2_sink+tiny(0.0d0))**0.5d0))
+          else
+             rho_inf = rho_gas
+          end if
+
+          ! Bondi-Hoyle-Lyttleton accretion rate
+          dMBH_overdt = 4.0d0 * pi * rho_inf * r2_sink * v_bondi * lambda_sonic
+          if(r%verbose_sink)write(*,*)'Bondi: ',dMBH_overdt
+
+          ! Eddington accretion rate, which introduces an optional cap
+          dMED_overdt = 4.0d0 * pi * factG_in_cgs * p%mp(ipart) * mH / (0.1d0 * sigma_T * c_cgs) * scale_t
+          if(r%eddington_cap>0)dMBH_overdt = min(dMBH_overdt, dMED_overdt*r%eddington_cap)
+
+          ! If the accretion rate is too low, do nothing
+          if((r%eddington_floor>0).and.(dMBH_overdt/dMED_overdt<r%eddington_floor))dMBH_overdt=0d0
+
+          ! Limiting total accreted mass to 75% of the mass in the stencil
+          dMBH_overdt = min(dMBH_overdt, 0.75d0*m_gas / dt_loc)
+
+          ! tp is a proper time: compare it with texp, not with the code time t
+          if(((g%texp - p%tp(ipart)).lt.r%t_start_black_hole).and.r%t_start_black_hole.gt.0.0)then
+             dMBH_overdt = exp(g%texp - p%tp(ipart) - r%t_start_black_hole) * dMBH_overdt
+          end if
+
+          if(r%manual_accretion_rate.gt.0.0d0)then
+             dMBH_overdt = r%manual_accretion_rate * dMED_overdt
+          end if
+
+       end if
+
+       !-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
+       ! Accrete from the sample points
+       !-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
+       m_acc=0.0d0; x_acc=0.0d0; p_acc=0.0d0; l_acc=0.0d0
+       if(dMBH_overdt>0.0d0)then
+          do j=1,nSKnei
+
+             igridn = igrid_nbor(j)
+             icelln = icell_nbor(j)
+
+             ! Get physical information
+             d          = d_nbor(j)
+             vv(1:ndim) = v_nbor(1:ndim,j)
+             e          = m%uold(icelln,5,igridn)/d
+
+             ! We need to remove all non-thermal energies as they are not accreted
+#ifdef MHD
+             bx = 0.5d0*(m%bold(icelln,1,igridn) + m%bold(icelln,4,igridn))
+             by = 0.5d0*(m%bold(icelln,2,igridn) + m%bold(icelln,5,igridn))
+             bz = 0.5d0*(m%bold(icelln,3,igridn) + m%bold(icelln,6,igridn))
+             emag = 0.5d0*(bx**2 + by**2 + bz**2)
+             e = e - emag/d
+#endif
+#if NENER>0
+             do irad = 1, nener
+                e = e - m%uold(icelln,5+irad,igridn)/d
+             end do
+#endif
+             ! Get accreted mass for this sample point
+             dm = dMBH_overdt * dt_loc / dble(nSKnei)
+             if (r%mass_weighting) dm = dm * d / rho_gas
+
+             ! Ensure that the accreted mass is positive and never exceeds
+             ! 75% of the gas content of this sample point (avoids negative densities)
+             dm = max(dm, 0.0d0)
+             dm = min(dm, 0.75d0*d*vol_pt)
+
+             ! Accrete from the cell
+             dvol = dm / vol_nbor(j)
+             m%unew(icelln,1,igridn)          = m%unew(icelln,1,igridn)          - dvol
+             m%unew(icelln,2:(ndim+1),igridn) = m%unew(icelln,2:(ndim+1),igridn) - dvol * vv(1:ndim)
+             m%unew(icelln,5,igridn)          = m%unew(icelln,5,igridn)          - dvol * e
+
+             ! Accrete passive scalars
+#if NVAR>5+NENER
+             do ivar = 6 + nener, nvar
+                m%unew(icelln,ivar,igridn) = m%unew(icelln,ivar,igridn) - dvol*m%uold(icelln,ivar,igridn)/d
+             end do
+#endif
+             ! Accreted mass
+             m_acc = m_acc + dm
+
+             if(r%momentum_conserving)then
+                ! Sample point position and velocity relative to the sink
+                x_rel(1:ndim) = (xcen(1:ndim) + xSKnei(1:ndim,j) - xsink(1:ndim)) * dx_cell
+                v_rel(1:ndim) = vv(1:ndim) - p%vp(ipart,1:ndim)
+
+                ! Accreted relative center of mass
+                x_acc(1:ndim) = x_acc(1:ndim) + dm * x_rel(1:ndim)
+
+                ! Accreted relative momentum
+                p_acc(1:ndim) = p_acc(1:ndim) + dm * v_rel(1:ndim)
+
+                ! Accreted relative angular momentum
+                l_acc(1:ndim) = l_acc(1:ndim) + dm * cross(x_rel(1:ndim), v_rel(1:ndim))
+             endif
+
+          end do
+       end if
+
+       ! Add accreted properties to sink variables
+       if(.not.p%static)p%xp(ipart,1:ndim) = p%xp(ipart,1:ndim) + x_acc(1:ndim) / ( p%mp(ipart) + m_acc )
+       p%vp(ipart,1:ndim)                  = p%vp(ipart,1:ndim) + p_acc(1:ndim) / ( p%mp(ipart) + m_acc )
+       p%jp(ipart,1:ndim)                  = ( p%mp(ipart) * p%jp(ipart,1:ndim) + l_acc(1:ndim) ) / ( p%mp(ipart) + m_acc )
+       if(.not.r%sink_fix_mass)p%mp(ipart) = p%mp(ipart) + m_acc
+
+       ! Save accreted mass to total
+       macc_loc = macc_loc + m_acc
+
+       !-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
+       ! Dynamics
+       !-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
+       if(r%drag_sink)then
+          call dynamical_friction(s,p,ilevel,ipart,rho_av_all,cs_gas,vel_gas,factG)
+       endif
+
+       !-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
+       ! Sink/AGN Feedback
+       !-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
+       if(r%agn.and.dMBH_overdt>0.0d0)then
+
+          ! Compute chi (fraction of Eddington)
+          acc_ratio = 0.0d0
+          if(dMED_overdt>0.0d0)acc_ratio = dMBH_overdt/dMED_overdt
+
+          ! Check if quasar mode
+          quasar_mode = (acc_ratio.gt.r%agn_fbk_mode_switch_threshold) .or. (norm2(p%jp(ipart,:)) .le. 0.0d0)
+
+          ! Compute the jet direction
+          jet_direction(1:ndim) = p%jp(ipart,1:ndim) / (norm2(p%jp(ipart,:)) + tiny(0.0d0))
+
+          ! Quasar mode energy
+          energy_agn = r%epsilon_rad * dMBH_overdt * (c_cgs/scale_v)**2 * dt_loc
+          fbk_ener_agn = r%epsilon_quasar * energy_agn
+
+          ! Radio mode momentum
+          fbk_mom_agn  = r%epsilon_radio * r%momentum_boost * energy_agn / (c_cgs/scale_v)
+
+          ! Compute the weights of the sample points
+          w_nbor=0d0; mu_nbor=0d0
+          do j=1,nSKnei
+             if(.not.quasar_mode)then
+                ! Radio mode: only shell points inside the bipolar cone
+                if(.not.shell(j))cycle
+                mu_nbor(j) = dot_product(vSKnei(1:ndim,j),jet_direction(1:ndim))
+                if(abs(mu_nbor(j))<cos_jet)cycle
+             endif
+             w_nbor(j) = 1d0
+             if(r%agn_use_mass_weighting)w_nbor(j) = d_nbor(j)
+          end do
+
+          if(quasar_mode)then
+             ! Quasar mode (energy)
+             w_tot = sum(w_nbor)
+             do j=1,nSKnei
+                igridn = igrid_nbor(j)
+                icelln = icell_nbor(j)
+                m%unew(icelln,5,igridn) = m%unew(icelln,5,igridn) + fbk_ener_agn * w_nbor(j) / w_tot / vol_nbor(j)
+             end do
+          else
+             ! Radio mode (momentum and associated kinetic energy),
+             ! half of the momentum in each hemisphere
+             w_plus  = sum(w_nbor, mask=mu_nbor>0d0)
+             w_minus = sum(w_nbor, mask=mu_nbor<0d0)
+             do j=1,nSKnei
+                if(w_nbor(j)==0.0d0)cycle
+                igridn = igrid_nbor(j)
+                icelln = icell_nbor(j)
+                if(mu_nbor(j)>0d0)then
+                   p_jet(1:ndim) = +0.5d0 * fbk_mom_agn * w_nbor(j) / w_plus  * jet_direction(1:ndim)
+                else
+                   p_jet(1:ndim) = -0.5d0 * fbk_mom_agn * w_nbor(j) / w_minus * jet_direction(1:ndim)
+                endif
+                de = dot_product(p_jet(1:ndim),v_nbor(1:ndim,j)) + sum(p_jet(1:ndim)**2)/(2d0*d_nbor(j)*vol_pt)
+                m%unew(icelln,2:4,igridn) = m%unew(icelln,2:4,igridn) + p_jet(1:ndim) / vol_nbor(j)
+                m%unew(icelln,5,igridn)   = m%unew(icelln,5,igridn)   + de / vol_nbor(j)
+             end do
+          end if
+
+       end if
+
+       ! Unlock all octs
+       call unlock_cache(m,igrid)
+       do j=1,nSKnei
+          call unlock_cache(m,igrid_nbor(j))
+       end do
+
+       !-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
+       ! Periodic box
+       !-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
+       do idim=1,ndim
+          if(r%periodic(idim))then
+             if(p%xp(ipart,idim)< 0.0d0           )p%xp(ipart,idim)=p%xp(ipart,idim)+r%box_size(idim)
+             if(p%xp(ipart,idim)>=r%box_size(idim))p%xp(ipart,idim)=p%xp(ipart,idim)-r%box_size(idim)
+          endif
+       end do
+
+       !-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
+       ! Save sink data at a high cadence if needed
+       !-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
+       if(output_file .and. p%idp(ipart) < 100000)then
+          if(r%agn)then
+             call dump_sink_data_fine_AGN(s,p,ipart,ilevel,scale_l,scale_t,scale_d, &
+                  &                       dMBH_overdt,dMED_overdt,rho_inf,cs_gas, &
+                  &                       fbk_mom_agn,fbk_ener_agn)
+          else
+             call dump_sink_data_fine(s,p,ipart,ilevel,scale_l,scale_t,scale_d, &
+                  &                   dMBH_overdt,dMED_overdt,rho_inf,cs_gas)
+          end if
+       end if
+
+    end do ! End loop over ipart
+
+    call close_cache(mdl)
+
+    end associate
+#endif
+#endif
+  end subroutine sink_mechanical
+  !##############################################################################
+  !##############################################################################
+  !##############################################################################
+  !##############################################################################
+end module sink_mechanical_module
