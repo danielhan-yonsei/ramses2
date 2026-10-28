@@ -138,6 +138,8 @@ subroutine m_cr_update_time(pst,ilevel,t,dt)
   in_broadcast_aexp%aexp=g%aexp
   in_broadcast_aexp%aexp_old=g%aexp_old
   in_broadcast_aexp%hexp=g%hexp
+  in_broadcast_aexp%nstep=g%nstep
+  in_broadcast_aexp%nstep_coarse=g%nstep_coarse
   call r_broadcast_aexp(pst,in_broadcast_aexp,storage_size(in_broadcast_aexp)/32)
 
   end associate
