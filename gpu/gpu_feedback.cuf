@@ -12,13 +12,13 @@ contains
 
   include 'gpu_hash.cuf'
 
-  !> Select recently formed stars for feedback
-  attributes(global) subroutine select_feedback_stars_kernel(star_tp, prefix_sum, head_idx, num_stars, texp, t_SN, dteff)
+  !> Select the stars whose supernova time falls within this level step
+  attributes(global) subroutine select_feedback_stars_kernel(star_tp, prefix_sum, head_idx, num_stars, texp, t_SN, texp_old)
     implicit none
     real(kind=dp), device :: star_tp(*)
     integer(kind=4), device :: prefix_sum(*)
     integer(kind=4), intent(in), value :: head_idx, num_stars
-    real(kind=8), intent(in), value :: texp, t_SN, dteff
+    real(kind=8), intent(in), value :: texp, t_SN, texp_old
 
     integer :: tid, ipart
     real(kind=dp) :: birth_time
@@ -29,7 +29,7 @@ contains
     ipart = head_idx + tid
     birth_time = star_tp(ipart)
 
-    if (birth_time >= (texp - t_SN - dteff) .and. birth_time < (texp - t_SN)) then
+    if (birth_time >= (texp_old - t_SN) .and. birth_time < (texp - t_SN)) then
        prefix_sum(tid + 1) = 1
     else
        prefix_sum(tid + 1) = 0

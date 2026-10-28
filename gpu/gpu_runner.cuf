@@ -1596,18 +1596,20 @@ contains
   !> @detail
   !> @param[in] sim : The simulation object
   !> @param[in] ilevel : The refinement level to update
+  !> @param[in] texp_old : The proper time at the start of the level step
   !> @param[out] msn_loc : The mass ejected on this rank
   !>
-  subroutine gpu_thermal_feedback(sim, ilevel, msn_loc)
+  subroutine gpu_thermal_feedback(sim, ilevel, texp_old, msn_loc)
     use nvtx
     use feedback_device, only: select_feedback_stars_kernel, compute_feedback_swap_table, thermal_feedback_kernel
     use ramses_commons, only: ramses_t
     type(ramses_t), intent(inout) :: sim
     integer, intent(in) :: ilevel
+    real(kind=8), intent(in) :: texp_old
     real(kind=8), intent(inout) :: msn_loc
 
     real(kind=8) :: scale_nH, scale_T2, scale_l, scale_d, scale_t, scale_v
-    real(kind=8) :: dx, vol, t_SN, e_SN, dteff
+    real(kind=8) :: dx, vol, t_SN, e_SN
     real(kind=8), device :: msn_loc_d
     integer(kind=4) :: head_idx, num_stars, num_selected
     integer(kind=4), device :: num_selected_d
@@ -1634,16 +1636,13 @@ contains
     ! Supernovae specific energy from cgs to code units
     e_SN=sim%r%E_SNII/(sim%r%M_SNII*2d33)/scale_v**2
 
-    ! Time step for stars at this level
-    dteff=sim%g%dtnew(ilevel)*sim%g%aexp**2
-
     num_threads = 256
     num_blocks = (num_stars + num_threads - 1) / num_threads
 
     ! Select feedback stars and count them in prefix_sum array
     call nvtxStartRange("Select Feedback Stars", color=3)!blue
     call select_feedback_stars_kernel<<<num_blocks, num_threads>>>(star_tp, prefix_sum, head_idx, num_stars, &
-         & sim%g%texp, t_SN, dteff)
+         & sim%g%texp, t_SN, texp_old)
     call GPU_Error_Check(__FILE__, __LINE__)
     call nvtxEndRange()
 
@@ -1687,19 +1686,21 @@ contains
   !> @detail
   !> @param[in] sim : The simulation object
   !> @param[in] ilevel : The refinement level to update
+  !> @param[in] texp_old : The proper time at the start of the level step
   !> @param[out] msn_loc : The mass ejected on this rank
   !>
   !>
-  subroutine gpu_mechanical_feedback(sim, ilevel, msn_loc)
+  subroutine gpu_mechanical_feedback(sim, ilevel, texp_old, msn_loc)
     use nvtx
     use feedback_device, only: select_feedback_stars_kernel, compute_feedback_swap_table, mechanical_feedback_kernel
     use ramses_commons, only: ramses_t
     type(ramses_t), intent(inout) :: sim
     integer, intent(in) :: ilevel
+    real(kind=8), intent(in) :: texp_old
     real(kind=8), intent(inout) :: msn_loc
 
     real(kind=8) :: scale_nH, scale_T2, scale_l, scale_d, scale_t, scale_v
-    real(kind=8) :: dx, vol, t_SN, e_SN, dteff, m_SN
+    real(kind=8) :: dx, vol, t_SN, e_SN, m_SN
     real(kind=dp), device :: msn_loc_d
     real(kind=dp) :: msn_loc_dp
     integer(kind=4) :: head_idx, num_stars, num_selected
@@ -1730,16 +1731,13 @@ contains
     ! Supernovae progenitor mass in code units
     m_SN=sim%r%M_SNII*2d33/(scale_d*scale_l**3)
 
-    ! Time step for stars at this level
-    dteff=sim%g%dtnew(ilevel)*sim%g%aexp**2
-
     num_threads = 256
     num_blocks = (num_stars + num_threads - 1) / num_threads
 
     ! Select feedback stars and count them in prefix_sum array
     call nvtxStartRange("Select Feedback Stars", color=3)!blue
     call select_feedback_stars_kernel<<<num_blocks, num_threads>>>(star_tp, prefix_sum, head_idx, num_stars, &
-         & sim%g%texp, t_SN, dteff)
+         & sim%g%texp, t_SN, texp_old)
     call GPU_Error_Check(__FILE__, __LINE__)
     call nvtxEndRange()
 

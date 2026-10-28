@@ -726,6 +726,7 @@ module amr_commons
      real(kind=8),dimension(1:MAXLEVEL)::dtold,dtnew   ! Time step at each level
      real(kind=8),dimension(1:MAXLEVEL)::rho_max       ! Maximum density at each level
      integer,dimension(1:MAXLEVEL)::isubcycle      ! Current subcycling step at each level
+     real(kind=8),dimension(1:MAXLEVEL)::texp_old  ! Proper time at the start of the current step at each level
 
      ! Only one process can write at a time in an I/O group
      integer::IOGROUPSIZE=0           ! Main snapshot

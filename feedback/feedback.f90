@@ -1,5 +1,10 @@
 module feedback_module
 
+    type :: in_feedback_t
+     integer::ilevel
+     real(kind=8)::texp_old
+  end type in_feedback_t
+
     type :: out_feedback_t
      real(kind=8)::mass
   end type out_feedback_t
@@ -9,7 +14,7 @@ contains
 !##############################################################################
 !##############################################################################
 !##############################################################################
-recursive subroutine r_thermal_feedback(pst,ilevel,input_size,output,output_size)
+recursive subroutine r_thermal_feedback(pst,input,input_size,output,output_size)
   use mdl_module
   use ramses_commons, only: pst_t
   use mdl_parameters
@@ -20,21 +25,21 @@ recursive subroutine r_thermal_feedback(pst,ilevel,input_size,output,output_size
   type(pst_t)::pst
   integer,VALUE::input_size
   integer::output_size
+  type(in_feedback_t)::input
   type(out_feedback_t)::output,next_output
 
-  integer::ilevel
   integer::rID
 
   if(pst%nLower>0)then
-     rID = mdl_send_request(pst%s%mdl,MDL_THERMAL_FEEDBACK,pst%iUpper+1,input_size,output_size,ilevel)
-     call r_thermal_feedback(pst%pLower,ilevel,input_size,output,output_size)
+     rID = mdl_send_request(pst%s%mdl,MDL_THERMAL_FEEDBACK,pst%iUpper+1,input_size,output_size,input)
+     call r_thermal_feedback(pst%pLower,input,input_size,output,output_size)
      call mdl_get_reply(pst%s%mdl,rID,output_size,next_output)
      output%mass=output%mass+next_output%mass
   else
 #ifdef _CUDA
-     call gpu_thermal_feedback(pst%s,ilevel,output%mass)
+     call gpu_thermal_feedback(pst%s,input%ilevel,input%texp_old,output%mass)
 #else
-     call thermal_feedback(pst%s,pst%s%star,ilevel,output%mass)
+     call thermal_feedback(pst%s,pst%s%star,input%ilevel,input%texp_old,output%mass)
 #endif
   endif
 
@@ -43,7 +48,7 @@ end subroutine r_thermal_feedback
 !##############################################################################
 !##############################################################################
 !##############################################################################
-subroutine thermal_feedback(s,p,ilevel,msn_loc)
+subroutine thermal_feedback(s,p,ilevel,texp_old,msn_loc)
   use amr_parameters, only: ndim, twotondim
   use ramses_commons, only: ramses_t
   use pm_commons, only: part_t
@@ -59,7 +64,7 @@ subroutine thermal_feedback(s,p,ilevel,msn_loc)
   type(ramses_t)::s
   type(part_t)::p
   integer::ilevel
-  real(kind=8)::msn_loc
+  real(kind=8)::texp_old,msn_loc
   !==================================================================
   ! This is the RAMSES routine for supernovae feedback using
   ! a thermal energy dump. The routine is called at every time step
@@ -73,7 +78,7 @@ subroutine thermal_feedback(s,p,ilevel,msn_loc)
   real(kind=8)::scale_nH,scale_T2,scale_l,scale_d,scale_t,scale_v
   real(kind=8)::dx_loc,vol_loc,vol_cell
   real(kind=8)::mejecta,dloss,dzloss,zloss,ekinetic,ethermal
-  real(kind=8)::birth_time,t_sn,e_sn,dteff,dold
+  real(kind=8)::birth_time,t_sn,e_sn,dold
   type(msg_large_realdp)::dummy_large_realdp
   logical::ok_level,ok_leaf
 #if NENER>0
@@ -109,12 +114,9 @@ subroutine thermal_feedback(s,p,ilevel,msn_loc)
   ! Loop over particles in Hilbert order
   do ipart=p%headp(ilevel),p%tailp(ilevel)
 
-     ! Compute time step for that particle
-     dteff=g%dtnew(p%levelp(ipart))*g%aexp**2
-
-     ! Select only recently formed stars
+     ! Select only stars whose supernova time falls within this level step
      birth_time=p%tp(ipart) ! Proper time
-     if(birth_time.lt.(g%texp-t_SN-dteff))cycle ! Already exploded
+     if(birth_time.lt.(texp_old-t_SN))cycle ! Already exploded
      if(birth_time.ge.(g%texp-t_SN))cycle ! Not old enough
 
      ok_level=.true.
@@ -224,11 +226,14 @@ subroutine m_mechanical_feedback(pst,ilevel,mass_fbk)
   ! This is the master routine calling mechanical feedback.
   ! Note that it loops over all levels that are time-synchronized.
   integer::i
+  type(in_feedback_t)::input_fbk
   type(out_feedback_t)::output_fbk
 
   mass_fbk=0d0
   do i=ilevel,pst%s%r%levelmin,-1
-     call r_mechanical_feedback(pst,i,1,output_fbk,2)
+     input_fbk%ilevel=i
+     input_fbk%texp_old=pst%s%g%texp_old(i)
+     call r_mechanical_feedback(pst,input_fbk,storage_size(input_fbk)/32,output_fbk,2)
      mass_fbk=mass_fbk+output_fbk%mass
      if(i>pst%s%r%levelmin)then
         if(pst%s%r%nsubcycle(i-1)==2.and.pst%s%g%isubcycle(i)==1)exit
@@ -240,7 +245,7 @@ end subroutine m_mechanical_feedback
 !##############################################################################
 !##############################################################################
 !##############################################################################
-recursive subroutine r_mechanical_feedback(pst,ilevel,input_size,output,output_size)
+recursive subroutine r_mechanical_feedback(pst,input,input_size,output,output_size)
   use mdl_module
   use ramses_commons, only: pst_t
   use mdl_parameters
@@ -251,21 +256,21 @@ recursive subroutine r_mechanical_feedback(pst,ilevel,input_size,output,output_s
   type(pst_t)::pst
   integer,VALUE::input_size
   integer::output_size
+  type(in_feedback_t)::input
   type(out_feedback_t)::output,next_output
 
-  integer::ilevel
   integer::rID
 
   if(pst%nLower>0)then
-     rID = mdl_send_request(pst%s%mdl,MDL_MECHANICAL_FEEDBACK,pst%iUpper+1,input_size,output_size,ilevel)
-     call r_mechanical_feedback(pst%pLower,ilevel,input_size,output,output_size)
+     rID = mdl_send_request(pst%s%mdl,MDL_MECHANICAL_FEEDBACK,pst%iUpper+1,input_size,output_size,input)
+     call r_mechanical_feedback(pst%pLower,input,input_size,output,output_size)
      call mdl_get_reply(pst%s%mdl,rID,output_size,next_output)
      output%mass=output%mass+next_output%mass
   else
 #ifdef _CUDA
-     call gpu_mechanical_feedback(pst%s,ilevel,output%mass)
+     call gpu_mechanical_feedback(pst%s,input%ilevel,input%texp_old,output%mass)
 #else
-     call mechanical_feedback(pst%s,pst%s%star,ilevel,output%mass)
+     call mechanical_feedback(pst%s,pst%s%star,input%ilevel,input%texp_old,output%mass)
 #endif
   endif
 
@@ -274,7 +279,7 @@ end subroutine r_mechanical_feedback
 !##############################################################################
 !##############################################################################
 !##############################################################################
-subroutine mechanical_feedback(s,p,ilevel,msn_loc)
+subroutine mechanical_feedback(s,p,ilevel,texp_old,msn_loc)
   use amr_parameters, only: ndim, twotondim
   use hydro_parameters, only: nvar
   use cr_parameters, only: ncrgrp
@@ -291,7 +296,7 @@ subroutine mechanical_feedback(s,p,ilevel,msn_loc)
   type(ramses_t)::s
   type(part_t)::p
   integer::ilevel
-  real(kind=8)::msn_loc
+  real(kind=8)::texp_old,msn_loc
   !==================================================================
   ! This is the RAMSES routine for supernovae feedback using
   ! only mechanical energy, no thermal energy.
@@ -330,7 +335,7 @@ subroutine mechanical_feedback(s,p,ilevel,msn_loc)
   real(kind=8)::scale_nH,scale_T2,scale_l,scale_d,scale_t,scale_v
   real(kind=8)::dx_loc,vol_loc,vol_cell
   real(kind=8)::mejecta,ekinetic,ethermal
-  real(kind=8)::birth_time,t_sn,e_sn,dteff,dold,num_SN,fecrtot
+  real(kind=8)::birth_time,t_sn,e_sn,dold,num_SN,fecrtot
   real(kind=8),dimension(ncrgrp)::e_sn_crs
   real(kind=8),dimension(1:3)::xcen,xnei
   real(kind=8),dimension(1:nvar)::q
@@ -413,12 +418,9 @@ subroutine mechanical_feedback(s,p,ilevel,msn_loc)
   ! Loop over particles in Hilbert order
   do ipart=p%headp(ilevel),p%tailp(ilevel)
 
-     ! Compute time step for that particle
-     dteff=g%dtnew(p%levelp(ipart))*g%aexp**2
-
-     ! Select only recently formed stars
+     ! Select only stars whose supernova time falls within this level step
      birth_time=p%tp(ipart) ! Proper time
-     if(birth_time.lt.(g%texp-t_SN-dteff))cycle ! Already exploded
+     if(birth_time.lt.(texp_old-t_SN))cycle ! Already exploded
      if(birth_time.ge.(g%texp-t_SN))cycle ! Not old enough
 
      ok_level=.true.
