@@ -151,7 +151,7 @@ subroutine output_part(s,p,filename)
      do i=1,p%npart
         xsp(i)=p%phip(i)
      end do
-     if(g%nstep_coarse==0)xsp=0.0 ! Potential not computed before the first kick
+     if(g%nstep==0)xsp=0.0 ! Potential not computed before the first kick
      ivar=ivar+1
      offset=nskip(ivar)-1
      call pio_write_array(f,xsp,offset)
