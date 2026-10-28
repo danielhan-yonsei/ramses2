@@ -306,6 +306,7 @@ contains
        center(idim)=int(x(idim))
     end do
 
+#if NDIM==3
     do kk=-nsearch,nsearch
        do jj=-nsearch,nsearch
           do ii=-nsearch,nsearch
@@ -332,6 +333,7 @@ contains
           end do
        end do
     end do
+#endif
 
     end associate
   end subroutine core_enlarged_stencil
