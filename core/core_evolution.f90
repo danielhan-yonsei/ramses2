@@ -1,9 +1,3 @@
-#ifndef HYDRO
-#error "CORE=1 requires HYDRO=1"
-#endif
-#if NDIM != 3
-#error "CORE=1 requires NDIM=3"
-#endif
 ! Core accretion: ACC_PREPARE builds the request of each core before the
 ! hydro step, ACC_FINALIZE caps it with the gas after cooling and applies it.
 module core_evolution_module
@@ -297,6 +291,7 @@ contains
     real(kind=8),allocatable,dimension(:)::macc,uacc,zacc
     real(kind=8),allocatable,dimension(:,:)::xacc,pacc,lacc
 
+#ifdef HYDRO
     associate(r=>s%r,m=>s%m,mdl=>s%mdl)
     dx_loc=r%boxlen/2**input%ilevel; vol_loc=dx_loc**ndim
     if(.not.allocated(core_acc_req))then
@@ -431,6 +426,7 @@ contains
     core_owner_touch_n=0
 
     end associate
+#endif
   end subroutine core_finalize
 
   !##############################################################################
@@ -473,6 +469,7 @@ contains
     real(kind=8)::bx,by,bz,emag
 #endif
 
+#ifdef HYDRO
     associate(r=>s%r,g=>s%g,m=>s%m)
 
     hash_nbor(0) = ilevel+1
@@ -642,6 +639,7 @@ contains
     end do
 
     end associate
+#endif
   contains
     ! Bondi density factor alpha(x)
     real(kind=8) function bondi_alpha(x)

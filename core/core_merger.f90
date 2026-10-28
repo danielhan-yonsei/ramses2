@@ -1,6 +1,3 @@
-#if NDIM != 3
-#error "CORE=1 requires NDIM=3"
-#endif
 module core_merger_module
 #ifndef WITHOUTMPI
   use mpi

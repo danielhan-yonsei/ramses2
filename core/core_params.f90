@@ -168,7 +168,20 @@ contains
      nml_ok=.false.
   endif
 
+#if NDIM!=3 || !defined(HYDRO)
+  if(core)then
+     write(*,*)'Error: cores need NDIM=3 and HYDRO=1'
+     nml_ok=.false.
+  endif
+#endif
+
 #ifdef _CUDA
+#if defined(MHD) || NENER>0
+  if(core)then
+     write(*,*)'Error: cores with MHD or NENER>0 are not supported on GPU'
+     nml_ok=.false.
+  endif
+#endif
   ! The GPU core path runs on one rank and forms cores from the gas alone
   if(core.and.s%g%ncpu>1)then
      write(*,*)'Error: cores on more than one rank are not supported on GPU'

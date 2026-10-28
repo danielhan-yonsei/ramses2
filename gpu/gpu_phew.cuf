@@ -1,9 +1,3 @@
-#ifdef MHD
-#error "Core formation with MHD is not yet implemented on GPU"
-#endif
-#if NENER>0
-#error "Core formation with NENER>0 is not yet implemented on GPU"
-#endif
 !> GPU core clump finder and core formation.
 module phew_device
   use amr_parameters, only: dp, ndim, twotondim, i8b

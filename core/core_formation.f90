@@ -1,9 +1,3 @@
-#ifndef HYDRO
-#error "CORE=1 requires HYDRO=1"
-#endif
-#if NDIM != 3
-#error "CORE=1 requires NDIM=3"
-#endif
 module core_formation_module
   use amr_parameters, only: ndim
 #ifdef _CUDA
@@ -155,7 +149,7 @@ subroutine core_clump(s)
   implicit none
   type(ramses_t)::s
 
-#ifdef GRAV
+#if NDIM==3 && defined(GRAV)
 
   !-----------------------------------------------
   ! Load clump finder parameters in clump object.
@@ -499,6 +493,7 @@ subroutine core_debit_host_cell(r,m,ilevel,igrid,ind,mseed_core,z_init,u_init)
   real(kind=8),dimension(1:nvar)::qpass
 #endif
 
+#ifdef HYDRO
   dx=r%boxlen/2d0**ilevel
   vol_loc=dx**ndim
   d=max(real(m%uold(ind,1,igrid),kind=8),r%smallr)
@@ -546,6 +541,7 @@ subroutine core_debit_host_cell(r,m,ilevel,igrid,ind,mseed_core,z_init,u_init)
      m%uold(ind,ivar,igrid)=dnew*qpass(ivar)
   end do
 #endif
+#endif
 
 end subroutine core_debit_host_cell
 !###########################################################
@@ -587,8 +583,10 @@ subroutine select_core_candidates(r,g,m,c,mseed)
      if(c%relevance(j)<=c%relevance_threshold)ok=.false.
      if(c%ncore(j)>0)ok=.false.
      if(.not.core_candidate_valid_now(r,g,m,c,j))ok=.false.
+#ifdef HYDRO
      mgas=m%uold(ind,1,igrid)*vol
      if(mseed>0.75*mgas)ok=.false.
+#endif
      ! With LP the cell test replaces the fixed threshold
      if(.not.r%core_use_LP_criteria.and. &
           r%core_density_threshold>0d0)then
@@ -643,6 +641,7 @@ logical function core_candidate_valid_now(r,g,m,c,ipeak) result(ok)
 #endif
 
   ok=.true.
+#ifdef HYDRO
   if(r%rho_type_core.ne.4)return
   ilevel=c%peak_level(ipeak)
   igrid=c%peak_grid(ipeak)
@@ -676,6 +675,7 @@ logical function core_candidate_valid_now(r,g,m,c,ipeak) result(ok)
      call units(r,g,scale_l,scale_t,scale_d,scale_v,scale_nH,scale_T2)
      ok=dens>r%core_density_threshold/scale_nH
   endif
+#endif
 
 end function core_candidate_valid_now
 !###########################################################
@@ -823,6 +823,7 @@ subroutine compute_core_clump_criteria(s,rtype)
   real(kind=8)::bx,by,bz
 #endif
 
+#ifdef HYDRO
   associate(r=>s%r,g=>s%g,m=>s%m,c=>s%c,mdl=>s%mdl)
 
   if(rtype.ne.4)return
@@ -988,6 +989,7 @@ subroutine compute_core_clump_criteria(s,rtype)
   deallocate(gas_mass,gas_idot,gas_com,gas_vel,gas_inertia,gas_idot_tensor)
 
   end associate
+#endif
 
 contains
   subroutine jacobi_sym3(a,v)

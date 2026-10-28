@@ -1,9 +1,3 @@
-#ifdef MHD
-#error "Core accretion with MHD is not yet implemented on GPU"
-#endif
-#if NENER>0
-#error "Core accretion with NENER>0 is not yet implemented on GPU"
-#endif
 !> GPU core particle accretion CUDA kernels.
 module core_device
   use amr_parameters, only: ndim, twotondim, dp
