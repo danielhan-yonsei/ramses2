@@ -34,7 +34,7 @@ recursive subroutine m_amr_step(pst,ilevel,icount,done)
        CORE_PHASE_RETIRE_BOUNDARY, &
        CORE_PHASE_ACC_PREPARE,CORE_PHASE_ACC_FINALIZE
   use tree_formation_module, only: m_tree_formation
-  use feedback_module, only: out_feedback_t, r_thermal_feedback, m_mechanical_feedback
+  use feedback_module, only: in_feedback_t, out_feedback_t, r_thermal_feedback, m_mechanical_feedback
   use clump_finder_module, only: m_clump_finder
   use lightcone_module, only: m_output_lightcone
   use rt_godunov_fine_module, only: r_set_rtunew,r_set_emissivity
@@ -67,6 +67,7 @@ recursive subroutine m_amr_step(pst,ilevel,icount,done)
   type(out_star_formation_t) :: output_star
   type(in_core_to_star_t) :: input_core_star
   type(out_core_to_star_t) :: output_core_star
+  type(in_feedback_t) :: input_fbk
   type(out_feedback_t) :: output_fbk
   type(out_accretion_t) :: output_acc
   type(core_step_state_t) :: core_state
@@ -84,6 +85,7 @@ recursive subroutine m_amr_step(pst,ilevel,icount,done)
   if(m%noct_tot(ilevel)==0)return
   if(r%verbose)write(*,'(" Entering amr_step",i1," for level",i2)')icount,ilevel
   g%isubcycle(ilevel)=icount ! only in master
+  g%texp_old(ilevel)=g%texp ! only in master
 
   !------------------------------
   ! Make new refinements and load
@@ -345,7 +347,9 @@ recursive subroutine m_amr_step(pst,ilevel,icount,done)
   !------------------
   if(r%star.and.r%thermal_feedback)then
      call m_timer('star - feedback','start')
-     call r_thermal_feedback(pst,ilevel,1,output_fbk,2)
+     input_fbk%ilevel=ilevel
+     input_fbk%texp_old=g%texp_old(ilevel)
+     call r_thermal_feedback(pst,input_fbk,storage_size(input_fbk)/32,output_fbk,2)
      if(output_fbk%mass>0)then
         g%mass_star_tot=g%mass_star_tot-output_fbk%mass
      endif
