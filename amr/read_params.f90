@@ -1411,11 +1411,6 @@ subroutine m_read_params(pst)
      write(*,*)'Error: sink_delta_tout>0 (high frequency sink dump) is not supported on GPU'
      nml_ok=.false.
   endif
-  ! The 56-point sink evolution is not yet ported to the GPU
-  if(sink.and.sink_mechanical)then
-     write(*,*)'Error: sink_mechanical=.true. is not yet supported on GPU'
-     nml_ok=.false.
-  endif
   ! The GPU hydro has slope_type 0 to 3, and 0 to 2 under MHD
   if(slope_type>3)then
      write(*,*)'Error: slope_type>3 is not supported on GPU'

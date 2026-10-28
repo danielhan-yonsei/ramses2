@@ -1,6 +1,9 @@
 module sink_mechanical_module
   use sink_evolution_module, only: out_accretion_t, bondi_alpha, dynamical_friction, &
        & dump_sink_data_fine, dump_sink_data_fine_AGN
+#ifdef _CUDA
+  use sink_device, only: gpu_sink_mechanical
+#endif
 contains
   !##############################################################################
   !##############################################################################
@@ -53,7 +56,11 @@ contains
        call mdl_get_reply(pst%s%mdl,rID,output_size,next_output)
        output%mass=output%mass+next_output%mass
     else
+#ifdef _CUDA
+       call gpu_sink_mechanical(pst%s,ilevel,output%mass)
+#else
        call sink_mechanical(pst%s,pst%s%sink,ilevel,output%mass)
+#endif
     endif
 
   end subroutine r_sink_mechanical

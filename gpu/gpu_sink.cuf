@@ -714,6 +714,492 @@ contains
     endif
   end subroutine sink_evolution_kernel
 
+  !> 56-point sink evolution: one 64-thread block per sink of level ilevel.
+  !> Thread j handles the half cell j of the 4x4x4 stencil around the host
+  !> cell (the 8 corner threads are idle). Mirrors the loop body of
+  !> sink_mechanical in sink_mechanical.f90: [A] accretion, [B] dynamical
+  !> friction, [C] AGN feedback, [D] periodic wrap.
+  attributes(global) subroutine sink_mechanical_kernel( &
+       & hash_key_d, hash_val_d, hash_size_d, ckey_max_d, key_off_d, ngridmax, &
+       & box_ckey_min_d, box_ckey_max_d, periodic_d, &
+       & head_idx, ilevel, accretion_type, &
+       & skip1, skip2, skip3, dx_loc, dtnew, texp, &
+       & factG, lambda_sonic, edd_fac, eddington_cap, eddington_floor, &
+       & t_start_black_hole, manual_accretion_rate, sink_density_threshold, sink_relevance_threshold, &
+       & gamma, smallr, smallc, boost_fac, &
+       & bondi_use_vrel, bondi_use_gas_mass, use_rho_inf, &
+       & mass_weighting, momentum_conserving, sink_fix_mass, static, drag_sink, &
+       & agn, agn_use_mass_weighting, agn_fbk_mode_switch_threshold, &
+       & epsilon_rad, epsilon_quasar, epsilon_radio, momentum_boost, c_code, &
+       & bs1, bs2, bs3, macc_loc_d)
+    implicit none
+    integer(kind=8), device :: hash_key_d(*)
+    integer(kind=4), device :: hash_val_d(*)
+    integer(kind=4), intent(in), value :: hash_size_d
+    integer(kind=4), device :: ckey_max_d(*)
+    integer(kind=8), device :: key_off_d(*)
+    integer(kind=4), intent(in), value :: ngridmax
+    integer(kind=4), device :: box_ckey_min_d(3,*)
+    integer(kind=4), device :: box_ckey_max_d(3,*)
+    logical, device :: periodic_d(3)
+    integer(kind=4), intent(in), value :: head_idx, ilevel, accretion_type
+    real(kind=dp), intent(in), value :: skip1, skip2, skip3, dx_loc, dtnew, texp
+    real(kind=dp), intent(in), value :: factG, lambda_sonic, edd_fac, eddington_cap, eddington_floor
+    real(kind=dp), intent(in), value :: t_start_black_hole, manual_accretion_rate, sink_density_threshold
+    real(kind=dp), intent(in), value :: sink_relevance_threshold
+    real(kind=dp), intent(in), value :: gamma, smallr, smallc, boost_fac
+    logical, intent(in), value :: bondi_use_vrel, bondi_use_gas_mass, use_rho_inf
+    logical, intent(in), value :: mass_weighting, momentum_conserving, sink_fix_mass, static
+    logical, intent(in), value :: drag_sink
+    logical, intent(in), value :: agn, agn_use_mass_weighting
+    real(kind=dp), intent(in), value :: agn_fbk_mode_switch_threshold
+    real(kind=dp), intent(in), value :: epsilon_rad, epsilon_quasar, epsilon_radio, momentum_boost, c_code
+    real(kind=dp), intent(in), value :: bs1, bs2, bs3
+    real(kind=dp), device :: macc_loc_d
+
+    real(kind=dp), parameter :: pi = 3.14159265358979_dp
+    ! Number of sample points (4x4x4 half cells minus the 8 corners)
+    integer, parameter :: nSKnei = 56
+    ! Half opening angle of the radio mode jet in degrees
+    real(kind=dp), parameter :: agn_jet_half_angle = 60.0_dp
+    real(kind=dp), shared :: s_dMBH, s_rho_gas
+    logical, shared :: s_do_agn, s_quasar
+    real(kind=dp), shared :: s_jet(3), s_fbk_ener, s_fbk_mom, s_w_tot, s_w_plus, s_w_minus
+    integer :: ipart, j, idim, igrid, icell, igridn, icelln, info, cell_level, level_nbor
+#if NVAR>5+NENER
+    integer :: ivar
+#endif
+#if NENER>0
+    integer :: irad
+#endif
+    integer(kind=4) :: ckey(3), ckey_nbor(3)
+    logical :: found, shell
+    real(kind=dp) :: xcen(3), xsink(3), xoff(3), xnei(3), x_rel(3), vv(3), v_rel(3), vp(3), p_jet(3)
+    real(kind=dp) :: dx_cell, vol_cell, vol_pt, vol_nei, xnei_min, xnei_max
+    real(kind=dp) :: d, e, ethermal, cs, mp, mtot, dm, dvol
+    real(kind=dp) :: rho_gas, cs_gas, m_gas, rho_av_all
+    real(kind=dp) :: vel_gas(3)
+    real(kind=dp) :: v_bondi, bondi_mass, rb, rb_max, r_acc
+    real(kind=dp) :: rho_inf, dMBH, dMED
+    real(kind=dp) :: m_acc, x_acc(3), p_acc(3), l_acc(3)
+    real(kind=dp) :: mach, mach_c, fI, v_rel_mag, drag_accel, dv_drag
+    real(kind=dp) :: acc_ratio, jnorm, energy_agn, cos_jet, mu, w, w_tot, w_plus, w_minus, de
+#ifdef MHD
+    real(kind=dp) :: bx, by, bz
+#endif
+
+    ipart = head_idx + blockIdx%x - 1
+    j = threadIdx%x - 1
+
+    ! Skip zero-mass (merged/defunct) sinks (the whole block exits)
+    if (sink_mp(ipart) <= 0.0_dp) return
+
+    mp = sink_mp(ipart)
+    vp(1) = sink_vp(ipart, 1)
+    vp(2) = sink_vp(ipart, 2)
+    vp(3) = sink_vp(ipart, 3)
+
+    ! Find the host cell at level ilevel
+    cell_level = ilevel
+    dx_cell = dx_loc
+    ckey(1) = int((sink_xp(ipart, 1) + skip1) / dx_cell)
+    ckey(2) = int((sink_xp(ipart, 2) + skip2) / dx_cell)
+    ckey(3) = int((sink_xp(ipart, 3) + skip3) / dx_cell)
+    call get_cell_by_key(hash_key_d, hash_val_d, hash_size_d, ckey_max_d, key_off_d, &
+         & cell_level, ckey, igrid, icell)
+
+    ! If the cell does not exist at level ilevel, then find it at level ilevel-1
+    if (igrid <= 0 .or. igrid > ngridmax) then
+       cell_level = ilevel - 1
+       dx_cell = 2.0_dp * dx_loc
+       ckey(1) = int((sink_xp(ipart, 1) + skip1) / dx_cell)
+       ckey(2) = int((sink_xp(ipart, 2) + skip2) / dx_cell)
+       ckey(3) = int((sink_xp(ipart, 3) + skip3) / dx_cell)
+       call get_cell_by_key(hash_key_d, hash_val_d, hash_size_d, ckey_max_d, key_off_d, &
+            & cell_level, ckey, igrid, icell)
+    endif
+
+    ! If cell not found, or not a leaf cell, we skip (the whole block exits)
+    if (igrid <= 0 .or. igrid > ngridmax) return
+    if (grid(igrid)%refined(icell)) return
+
+    ! Host cell properties, positions in units of the host cell size
+    vol_cell = dx_cell**3
+    vol_pt = vol_cell / real(twotondim, kind=dp)
+    xcen(1:3) = real(ckey(1:3), kind=dp) + 0.5_dp
+    xsink(1) = (sink_xp(ipart, 1) + skip1) / dx_cell
+    xsink(2) = (sink_xp(ipart, 2) + skip2) / dx_cell
+    xsink(3) = (sink_xp(ipart, 3) + skip3) / dx_cell
+
+    ! Largest Bondi radius whose square times a density cannot overflow
+    rb_max = sqrt(sqrt(huge(1.0_dp)))
+
+    ! Accretion outputs, also read by friction and AGN feedback
+    ! (zero when accretion is disabled, as on the CPU)
+    rho_gas = 0.0_dp; vel_gas = 0.0_dp; cs_gas = 0.0_dp; m_gas = 0.0_dp; rho_av_all = 0.0_dp
+    rho_inf = 0.0_dp; dMBH = 0.0_dp; dMED = 0.0_dp
+
+    !-------------------------------------------
+    ! Sample point of this thread, with offsets
+    ! -0.75, -0.25, 0.25 and 0.75 from the host cell centre
+    !-------------------------------------------
+    xoff(1) = 0.5_dp * real(mod(j, 4), kind=dp) - 0.75_dp
+    xoff(2) = 0.5_dp * real(mod(j / 4, 4), kind=dp) - 0.75_dp
+    xoff(3) = 0.5_dp * real(j / 16, kind=dp) - 0.75_dp
+    ! The 8 corners are not sample points, the 8 central points are not in the shell
+    found = .not. (abs(xoff(1)) > 0.5_dp .and. abs(xoff(2)) > 0.5_dp .and. abs(xoff(3)) > 0.5_dp)
+    shell = (abs(xoff(1)) > 0.5_dp .or. abs(xoff(2)) > 0.5_dp .or. abs(xoff(3)) > 0.5_dp)
+
+    !-------------------------------------------
+    ! Gather: collect local gas information
+    !-------------------------------------------
+    if (found) then
+       xnei(1:3) = xcen(1:3) + xoff(1:3)
+
+       ! Periodic boundary conditions
+       do idim = 1, 3
+          if (periodic_d(idim)) then
+             xnei_min = real(box_ckey_min_d(idim, cell_level + 1), kind=dp)
+             xnei_max = real(box_ckey_max_d(idim, cell_level + 1), kind=dp)
+             if (xnei(idim) < xnei_min) then
+                xnei(idim) = xnei(idim) - xnei_min + xnei_max
+             endif
+             if (xnei(idim) >= xnei_max) then
+                xnei(idim) = xnei(idim) + xnei_min - xnei_max
+             endif
+          endif
+       end do
+
+       ! Get neighboring cell at current level
+       level_nbor = cell_level
+       ckey_nbor(1) = int(xnei(1))
+       ckey_nbor(2) = int(xnei(2))
+       ckey_nbor(3) = int(xnei(3))
+       call get_cell_by_key(hash_key_d, hash_val_d, hash_size_d, ckey_max_d, key_off_d, &
+            & level_nbor, ckey_nbor, igridn, icelln)
+
+       if (igridn <= 0 .or. igridn > ngridmax) then
+          ! If missing, get neighboring cell at current level - 1
+          level_nbor = cell_level - 1
+          ckey_nbor(1) = int(xnei(1) * 0.5_dp)
+          ckey_nbor(2) = int(xnei(2) * 0.5_dp)
+          ckey_nbor(3) = int(xnei(3) * 0.5_dp)
+          call get_cell_by_key(hash_key_d, hash_val_d, hash_size_d, ckey_max_d, key_off_d, &
+               & level_nbor, ckey_nbor, igridn, icelln)
+       else if (grid(igridn)%refined(icelln)) then
+          ! If refined, get neighboring cell at current level + 1
+          level_nbor = cell_level + 1
+          ckey_nbor(1) = int(xnei(1) * 2.0_dp)
+          ckey_nbor(2) = int(xnei(2) * 2.0_dp)
+          ckey_nbor(3) = int(xnei(3) * 2.0_dp)
+          call get_cell_by_key(hash_key_d, hash_val_d, hash_size_d, ckey_max_d, key_off_d, &
+               & level_nbor, ckey_nbor, igridn, icelln)
+       endif
+
+       ! If missing, or not a leaf cell, skip
+       found = (igridn > 0 .and. igridn <= ngridmax)
+       if (found) found = .not. grid(igridn)%refined(icelln)
+    endif
+
+    if (found) then
+       ! Volume of the neighbouring cell
+       if (level_nbor == cell_level) then
+          vol_nei = vol_cell
+       else if (level_nbor == cell_level - 1) then
+          vol_nei = vol_cell * 8.0_dp
+       else
+          vol_nei = vol_cell * 0.125_dp
+       endif
+
+       d     = max(uold(icelln, 1, igridn), smallr)
+       vv(1) = uold(icelln, 2, igridn) / d
+       vv(2) = uold(icelln, 3, igridn) / d
+       vv(3) = uold(icelln, 4, igridn) / d
+       e     = uold(icelln, 5, igridn)
+       ! Remove all non-thermal energies as they are not accreted
+#ifdef MHD
+       bx = 0.5_dp * (bold(icelln, 1, igridn) + bold(icelln, 4, igridn))
+       by = 0.5_dp * (bold(icelln, 2, igridn) + bold(icelln, 5, igridn))
+       bz = 0.5_dp * (bold(icelln, 3, igridn) + bold(icelln, 6, igridn))
+       e = e - 0.5_dp * (bx**2 + by**2 + bz**2)
+#endif
+#if NENER>0
+       do irad = 1, nener
+          e = e - uold(icelln, 5 + irad, igridn)
+       end do
+#endif
+       ethermal = (e - 0.5_dp * d * (vv(1)**2 + vv(2)**2 + vv(3)**2)) / d
+       cs = sqrt(max(gamma * (gamma - 1.0_dp) * ethermal, smallc**2) * boost_fac)
+       ! Specific energy removed by accretion
+       e = e / d
+
+       ! Add to average information (each point has the same volume)
+       rho_gas      = d / real(nSKnei, kind=dp)
+       vel_gas(1:3) = vv(1:3) / real(nSKnei, kind=dp)
+       cs_gas       = cs / real(nSKnei, kind=dp)
+       m_gas        = d * vol_pt
+#ifdef GRAV
+       rho_av_all   = rho(icelln, igridn) / real(nSKnei, kind=dp)
+#endif
+    endif
+
+    rho_gas    = block_reduce_dp_sum(rho_gas)
+    vel_gas(1) = block_reduce_dp_sum(vel_gas(1))
+    vel_gas(2) = block_reduce_dp_sum(vel_gas(2))
+    vel_gas(3) = block_reduce_dp_sum(vel_gas(3))
+    cs_gas     = block_reduce_dp_sum(cs_gas)
+    m_gas      = block_reduce_dp_sum(m_gas)
+    rho_av_all = block_reduce_dp_sum(rho_av_all)
+
+    !-------------------------------------------
+    ! Rate: compute and limit the accretion rate
+    !-------------------------------------------
+    if (j == 0) then
+       if (accretion_type == 1) then
+          v_rel(1:3) = vel_gas(1:3) - vp(1:3)
+          if (bondi_use_vrel) then
+             v_bondi = sqrt(v_rel(1)**2 + v_rel(2)**2 + v_rel(3)**2 + cs_gas**2)
+          else
+             v_bondi = cs_gas
+          endif
+          if (bondi_use_gas_mass) then
+             bondi_mass = mp + m_gas
+          else
+             bondi_mass = mp
+          endif
+          rb = min(factG * bondi_mass / v_bondi**2, rb_max)
+          ! Density at infinity (using extrapolation from the radius
+          ! of the sphere with the stencil volume 7 dx^3)
+          if (use_rho_inf) then
+             r_acc = (21.0_dp / (4.0_dp * pi))**(1.0_dp / 3.0_dp) * dx_cell
+             rho_inf = rho_gas / bondi_alpha_device(r_acc / (rb + tiny(1.0_dp)))
+          else
+             rho_inf = rho_gas
+          endif
+          dMBH = 4.0_dp * pi * rho_inf * rb * rb * v_bondi * lambda_sonic
+       else if (accretion_type == 3) then
+          ! Accrete in one time step all the gas above the effective peak density for sink formation
+          dMBH = (rho_gas - sink_relevance_threshold * sink_density_threshold) * vol_pt &
+               & * real(nSKnei, kind=dp) / dtnew
+          dMBH = max(dMBH, 0.0_dp)
+       endif
+
+       if (accretion_type > 0) then
+          ! Eddington rate and optional cap
+          dMED = edd_fac * mp
+          if (eddington_cap > 0.0_dp) dMBH = min(dMBH, dMED * eddington_cap)
+          ! If the accretion rate is too low, do nothing
+          if (eddington_floor > 0.0_dp .and. dMBH / dMED < eddington_floor) dMBH = 0.0_dp
+          ! Limit total accreted mass to 75% of the mass in the stencil
+          dMBH = min(dMBH, 0.75_dp * m_gas / dtnew)
+          ! tp is a proper time: compare it with texp, not with the code time t
+          if ((texp - sink_tp(ipart)) < t_start_black_hole .and. t_start_black_hole > 0.0_dp) then
+             dMBH = exp(texp - sink_tp(ipart) - t_start_black_hole) * dMBH
+          endif
+          if (manual_accretion_rate > 0.0_dp) dMBH = manual_accretion_rate * dMED
+       endif
+
+       s_dMBH = dMBH
+       s_rho_gas = rho_gas
+    endif
+    call syncthreads()
+
+    !===========================================
+    ! [A] Accrete from the sample points
+    !===========================================
+    if (s_dMBH > 0.0_dp) then
+
+    m_acc = 0.0_dp; x_acc = 0.0_dp; p_acc = 0.0_dp; l_acc = 0.0_dp
+    if (found) then
+       ! Accreted mass for this sample point, never more than 75% of its gas
+       dm = s_dMBH * dtnew / real(nSKnei, kind=dp)
+       if (mass_weighting) dm = dm * d / s_rho_gas
+       dm = max(dm, 0.0_dp)
+       dm = min(dm, 0.75_dp * d * vol_pt)
+
+       ! Accrete from the cell
+       dvol = dm / vol_nei
+       info = atomicadd(unew(icelln, 1, igridn), -dvol)
+       info = atomicadd(unew(icelln, 2, igridn), -dvol * vv(1))
+       info = atomicadd(unew(icelln, 3, igridn), -dvol * vv(2))
+       info = atomicadd(unew(icelln, 4, igridn), -dvol * vv(3))
+       info = atomicadd(unew(icelln, 5, igridn), -dvol * e)
+#if NVAR>5+NENER
+       do ivar = 6 + nener, nvar
+          info = atomicadd(unew(icelln, ivar, igridn), -dvol * uold(icelln, ivar, igridn) / d)
+       end do
+#endif
+       ! Accreted mass, relative center of mass, momentum and angular momentum
+       m_acc = dm
+       if (momentum_conserving) then
+          x_rel(1:3) = (xcen(1:3) + xoff(1:3) - xsink(1:3)) * dx_cell
+          v_rel(1:3) = vv(1:3) - vp(1:3)
+          x_acc(1:3) = dm * x_rel(1:3)
+          p_acc(1:3) = dm * v_rel(1:3)
+          l_acc(1) = dm * (x_rel(2) * v_rel(3) - x_rel(3) * v_rel(2))
+          l_acc(2) = dm * (x_rel(3) * v_rel(1) - x_rel(1) * v_rel(3))
+          l_acc(3) = dm * (x_rel(1) * v_rel(2) - x_rel(2) * v_rel(1))
+       endif
+    endif
+
+    m_acc    = block_reduce_dp_sum(m_acc)
+    x_acc(1) = block_reduce_dp_sum(x_acc(1))
+    x_acc(2) = block_reduce_dp_sum(x_acc(2))
+    x_acc(3) = block_reduce_dp_sum(x_acc(3))
+    p_acc(1) = block_reduce_dp_sum(p_acc(1))
+    p_acc(2) = block_reduce_dp_sum(p_acc(2))
+    p_acc(3) = block_reduce_dp_sum(p_acc(3))
+    l_acc(1) = block_reduce_dp_sum(l_acc(1))
+    l_acc(2) = block_reduce_dp_sum(l_acc(2))
+    l_acc(3) = block_reduce_dp_sum(l_acc(3))
+
+    ! Add accreted quantities to the sink
+    if (j == 0) then
+       mtot = mp + m_acc
+       if (.not. static) then
+          sink_xp(ipart, 1) = sink_xp(ipart, 1) + x_acc(1) / mtot
+          sink_xp(ipart, 2) = sink_xp(ipart, 2) + x_acc(2) / mtot
+          sink_xp(ipart, 3) = sink_xp(ipart, 3) + x_acc(3) / mtot
+       endif
+       sink_vp(ipart, 1) = sink_vp(ipart, 1) + p_acc(1) / mtot
+       sink_vp(ipart, 2) = sink_vp(ipart, 2) + p_acc(2) / mtot
+       sink_vp(ipart, 3) = sink_vp(ipart, 3) + p_acc(3) / mtot
+       sink_jp(ipart, 1) = (mp * sink_jp(ipart, 1) + l_acc(1)) / mtot
+       sink_jp(ipart, 2) = (mp * sink_jp(ipart, 2) + l_acc(2)) / mtot
+       sink_jp(ipart, 3) = (mp * sink_jp(ipart, 3) + l_acc(3)) / mtot
+       if (.not. sink_fix_mass) sink_mp(ipart) = mtot
+       info = atomicadd(macc_loc_d, m_acc)
+    endif
+
+    endif ! s_dMBH > 0
+
+    !===========================================
+    ! [B] Dynamical friction (Ostriker 1999), mirrors dynamical_friction
+    !===========================================
+    if (drag_sink .and. j == 0) then
+       ! Velocity of the gas relative to the (updated) sink velocity
+       v_rel(1) = vel_gas(1) - sink_vp(ipart, 1)
+       v_rel(2) = vel_gas(2) - sink_vp(ipart, 2)
+       v_rel(3) = vel_gas(3) - sink_vp(ipart, 3)
+       v_rel_mag = sqrt(v_rel(1)**2 + v_rel(2)**2 + v_rel(3)**2)
+       if (v_rel_mag > 0.0_dp .and. cs_gas > 0.0_dp) then
+          mach = v_rel_mag / cs_gas
+          ! Both regimes are singular at mach=1, so the Mach number is clamped away from it
+          if (mach < 1.0_dp) then
+             ! Subsonic; series at small mach avoids cancellation
+             mach_c = min(mach, 0.99_dp)
+             if (mach_c < 0.01_dp) then
+                fI = mach_c**3 / 3.0_dp
+             else
+                fI = 0.5_dp * log((1.0_dp + mach_c) / (1.0_dp - mach_c)) - mach_c
+             endif
+          else
+             ! Supersonic, value for log(Lambda) taken from Beckmann+2018
+             mach_c = max(mach, 1.01_dp)
+             fI = 0.5_dp * log(mach_c**2 - 1.0_dp) + 4.0_dp
+          endif
+          ! Drag acceleration, limited so drag can at most cancel the relative velocity
+          drag_accel = fI * 4.0_dp * pi * factG**2 * sink_mp(ipart) * rho_av_all / v_rel_mag**2
+          dv_drag = min(drag_accel * dtnew, v_rel_mag)
+          sink_vp(ipart, 1) = sink_vp(ipart, 1) + dv_drag * v_rel(1) / v_rel_mag
+          sink_vp(ipart, 2) = sink_vp(ipart, 2) + dv_drag * v_rel(2) / v_rel_mag
+          sink_vp(ipart, 3) = sink_vp(ipart, 3) + dv_drag * v_rel(3) / v_rel_mag
+       endif
+    endif
+
+    !===========================================
+    ! [C] AGN feedback, mirrors the feedback part of sink_mechanical
+    !===========================================
+    if (agn) then
+       ! Thread 0 holds the accretion rates; nothing to inject without a positive rate
+       if (j == 0) then
+          s_do_agn = (dMBH > 0.0_dp)
+          if (s_do_agn) then
+             acc_ratio = 0.0_dp
+             if (dMED > 0.0_dp) acc_ratio = dMBH / dMED
+             jnorm = sqrt(sink_jp(ipart, 1)**2 + sink_jp(ipart, 2)**2 + sink_jp(ipart, 3)**2)
+             s_quasar = (acc_ratio > agn_fbk_mode_switch_threshold) .or. (jnorm <= 0.0_dp)
+             s_jet(1) = sink_jp(ipart, 1) / (jnorm + tiny(1.0_dp))
+             s_jet(2) = sink_jp(ipart, 2) / (jnorm + tiny(1.0_dp))
+             s_jet(3) = sink_jp(ipart, 3) / (jnorm + tiny(1.0_dp))
+             ! Quasar mode energy and radio mode momentum
+             energy_agn = epsilon_rad * dMBH * c_code**2 * dtnew
+             s_fbk_ener = epsilon_quasar * energy_agn
+             s_fbk_mom  = epsilon_radio * momentum_boost * energy_agn / c_code
+          endif
+       endif
+       call syncthreads()
+
+       if (s_do_agn) then
+          ! Weight of this sample point
+          cos_jet = cos(pi / 180.0_dp * agn_jet_half_angle)
+          w = 0.0_dp; mu = 0.0_dp
+          if (found) then
+             w = 1.0_dp
+             if (agn_use_mass_weighting) w = d
+             if (.not. s_quasar) then
+                ! Radio mode: only shell points inside the bipolar cone
+                mu = (xoff(1) * s_jet(1) + xoff(2) * s_jet(2) + xoff(3) * s_jet(3)) &
+                     & / sqrt(xoff(1)**2 + xoff(2)**2 + xoff(3)**2)
+                if (.not. shell .or. abs(mu) < cos_jet) w = 0.0_dp
+             endif
+          endif
+          w_tot = w
+          w_plus = 0.0_dp; w_minus = 0.0_dp
+          if (mu > 0.0_dp) w_plus = w
+          if (mu < 0.0_dp) w_minus = w
+          w_tot   = block_reduce_dp_sum(w_tot)
+          w_plus  = block_reduce_dp_sum(w_plus)
+          w_minus = block_reduce_dp_sum(w_minus)
+          if (j == 0) then
+             s_w_tot = w_tot
+             s_w_plus = w_plus
+             s_w_minus = w_minus
+          endif
+          call syncthreads()
+
+          if (w > 0.0_dp) then
+             if (s_quasar) then
+                ! Quasar mode (energy)
+                info = atomicadd(unew(icelln, 5, igridn), s_fbk_ener * w / s_w_tot / vol_nei)
+             else
+                ! Radio mode (momentum and associated kinetic energy),
+                ! half of the momentum in each hemisphere
+                if (mu > 0.0_dp) then
+                   p_jet(1:3) = +0.5_dp * s_fbk_mom * w / s_w_plus  * s_jet(1:3)
+                else
+                   p_jet(1:3) = -0.5_dp * s_fbk_mom * w / s_w_minus * s_jet(1:3)
+                endif
+                de = p_jet(1) * vv(1) + p_jet(2) * vv(2) + p_jet(3) * vv(3) &
+                     & + (p_jet(1)**2 + p_jet(2)**2 + p_jet(3)**2) / (2.0_dp * d * vol_pt)
+                info = atomicadd(unew(icelln, 2, igridn), p_jet(1) / vol_nei)
+                info = atomicadd(unew(icelln, 3, igridn), p_jet(2) / vol_nei)
+                info = atomicadd(unew(icelln, 4, igridn), p_jet(3) / vol_nei)
+                info = atomicadd(unew(icelln, 5, igridn), de / vol_nei)
+             endif
+          endif
+       endif
+    endif
+
+    !===========================================
+    ! [D] Periodic box
+    !===========================================
+    if (j == 0) then
+       if (periodic_d(1)) then
+          if (sink_xp(ipart, 1) <  0.0_dp) sink_xp(ipart, 1) = sink_xp(ipart, 1) + bs1
+          if (sink_xp(ipart, 1) >= bs1   ) sink_xp(ipart, 1) = sink_xp(ipart, 1) - bs1
+       endif
+       if (periodic_d(2)) then
+          if (sink_xp(ipart, 2) <  0.0_dp) sink_xp(ipart, 2) = sink_xp(ipart, 2) + bs2
+          if (sink_xp(ipart, 2) >= bs2   ) sink_xp(ipart, 2) = sink_xp(ipart, 2) - bs2
+       endif
+       if (periodic_d(3)) then
+          if (sink_xp(ipart, 3) <  0.0_dp) sink_xp(ipart, 3) = sink_xp(ipart, 3) + bs3
+          if (sink_xp(ipart, 3) >= bs3   ) sink_xp(ipart, 3) = sink_xp(ipart, 3) - bs3
+       endif
+    endif
+  end subroutine sink_mechanical_kernel
+
   ! =========================================================================
   !> Sink merger: set flag1 to huge(1) in the octs of level ilevel.
   !> Mirrors the flag1 reset of sink_id_deposition in sink_merger.f90.
@@ -1111,6 +1597,100 @@ contains
 
     end associate
   end subroutine gpu_sink_evolution
+
+  ! =========================================================================
+  ! Host Driver: 56-point sink accretion, friction, AGN feedback and periodic
+  ! wrap for all sinks of level ilevel. Mirrors sink_mechanical in sink_mechanical.f90.
+  ! =========================================================================
+  subroutine gpu_sink_mechanical(sim, ilevel, macc_loc)
+    use nvtx
+    use constants, only: pi, twopi, factG_in_cgs, mH, sigma_T, c_cgs
+    use ramses_commons, only: ramses_t
+    use gpu_runner, only: hash_key, hash_val, ckey_max, key_off, box_ckey_min, box_ckey_max, periodic
+    implicit none
+    type(ramses_t) :: sim
+    integer, intent(in) :: ilevel
+    real(kind=8), intent(out) :: macc_loc
+
+    real(kind=8) :: scale_nH, scale_T2, scale_l, scale_d, scale_t, scale_v
+    real(kind=8) :: factG, lambda_sonic, edd_fac, dx_loc, c_code
+    real(kind=dp), device :: macc_loc_d
+    real(kind=dp) :: macc_loc_dp
+    integer :: head_idx, nsink_lev
+
+    associate(r=>sim%r, g=>sim%g, m=>sim%m, p=>sim%sink)
+
+    macc_loc = 0.0d0
+    head_idx = p%headp(ilevel)
+    nsink_lev = p%tailp(ilevel) - head_idx + 1
+    if (nsink_lev <= 0) return
+
+    if (g%myid == 1 .and. r%verbose) write(*,*) 'Entering gpu_sink_mechanical...'
+
+    ! Conversion factor from user units to cgs units
+    call units(r, g, scale_l, scale_t, scale_d, scale_v, scale_nH, scale_T2)
+
+    ! Gravitational constant
+    factG = 1d0
+    if (r%cosmo) factG = 3d0/4d0/twopi*g%omega_m*g%aexp
+
+    ! Bondi sonic constant
+    if (r%use_bondi_lambda) then
+       if (abs(r%gamma - 1).le.0.01) then
+          lambda_sonic = 0.25d0*exp(1.5d0)
+       else if (abs(r%gamma - 5.0d0/3.0d0).le.0.01) then
+          lambda_sonic = 0.25d0
+       else
+          lambda_sonic = 0.5d0**((r%gamma + 1)/(2d0*(r%gamma - 1))) &
+               & * (0.25d0*(5d0-3d0*r%gamma))**(-(5d0-3d0*r%gamma)/(2d0*(r%gamma - 1)))
+       end if
+    else
+       lambda_sonic = 1.0d0
+    end if
+
+    ! Eddington rate per unit sink mass (code units)
+    edd_fac = 4.0d0 * pi * factG_in_cgs * mH / (0.1d0 * sigma_T * c_cgs) * scale_t
+
+    ! Mesh spacing in that level
+    dx_loc = r%boxlen/2**ilevel
+
+    ! Speed of light in code units
+    c_code = c_cgs/scale_v
+
+    macc_loc_d = 0.0_dp
+
+    ! One thread per half cell of the 4x4x4 stencil
+    call nvtxStartRange("GPU Sink Mechanical Kernel", color=5)!red
+    call sink_mechanical_kernel<<<nsink_lev, 64>>>( &
+         & hash_key, hash_val, m%hash_size, ckey_max, key_off, m%ngridmax, &
+         & box_ckey_min, box_ckey_max, periodic, &
+         & head_idx, ilevel, r%accretion_type, &
+         & real(m%skip(1),kind=dp), real(m%skip(2),kind=dp), real(m%skip(3),kind=dp), &
+         & real(dx_loc,kind=dp), real(g%dtnew(ilevel),kind=dp), real(g%texp,kind=dp), &
+         & real(factG,kind=dp), real(lambda_sonic,kind=dp), real(edd_fac,kind=dp), &
+         & real(r%eddington_cap,kind=dp), real(r%eddington_floor,kind=dp), &
+         & real(r%t_start_black_hole,kind=dp), real(r%manual_accretion_rate,kind=dp), &
+         & real(r%sink_density_threshold,kind=dp), &
+         & real(r%sink_relevance_threshold,kind=dp), &
+         & real(r%gamma,kind=dp), real(r%smallr,kind=dp), real(r%smallc,kind=dp), &
+         & real(r%acc_sink_boost**(-2d0/3d0),kind=dp), &
+         & r%bondi_use_vrel, r%bondi_use_gas_mass, r%use_rho_inf, &
+         & r%mass_weighting, r%momentum_conserving, r%sink_fix_mass, p%static, r%drag_sink, &
+         & r%agn, r%agn_use_mass_weighting, &
+         & real(r%agn_fbk_mode_switch_threshold,kind=dp), real(r%epsilon_rad,kind=dp), &
+         & real(r%epsilon_quasar,kind=dp), real(r%epsilon_radio,kind=dp), &
+         & real(r%momentum_boost,kind=dp), real(c_code,kind=dp), &
+         & real(r%box_size(1),kind=dp), real(r%box_size(2),kind=dp), real(r%box_size(3),kind=dp), &
+         & macc_loc_d)
+    call GPU_Error_Check(__FILE__, __LINE__)
+    call nvtxEndRange()
+
+    ! Copy back the total accreted mass from device to host
+    macc_loc_dp = macc_loc_d
+    macc_loc = real(macc_loc_dp, kind=8)
+
+    end associate
+  end subroutine gpu_sink_mechanical
 
   ! =========================================================================
   ! Host Driver: sink merger for all sinks of level ilevel. Mirrors
