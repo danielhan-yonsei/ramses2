@@ -105,6 +105,7 @@ subroutine core_retirement(s,r,g,star,core,nstep_coarse,mstar_loc)
            write(*,*)'Increase nstarmax in the namelist'
            call mdl_abort(s%mdl)
         endif
+        if(allocated(star%phip))star%phip(star%npart)=0.0
         star%xp(star%npart,1:ndim)=core%xp(i,1:ndim)
         star%vp(star%npart,1:ndim)=core%vp(i,1:ndim)
         star%mp(star%npart)=core%mp(i)

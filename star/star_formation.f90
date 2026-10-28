@@ -283,6 +283,7 @@ subroutine star_formation(r,g,m,s,ilevel,mstar_loc)
                  write(*,*)'Increase nstarmax in the namelist'
                  stop
               endif
+              if(allocated(s%phip))s%phip(s%npart)=0.0
               ! Compute star particle coordinate from cell centers
               s%xp(s%npart,1)=(2*m%grid(igrid)%ckey(1)+MOD((ind-1)  ,2)+0.5)*dx-m%skip(1)
               s%xp(s%npart,2)=(2*m%grid(igrid)%ckey(2)+MOD((ind-1)/2,2)+0.5)*dx-m%skip(2)

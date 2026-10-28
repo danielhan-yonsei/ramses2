@@ -352,13 +352,13 @@ subroutine cic_kick_drift_part(s,p,ilevel,action_part)
 
      ! Gather 3-force
      ff(1:ndim)=0.0
+     if(allocated(p%phip))p%phip(ipart)=0.0
      if(ok_level)then
 #ifdef GRAV
         do ind=1,twotondim
            ff(1:ndim)=ff(1:ndim)+m%f(icell(ind),1:ndim,igrid(ind))*vol(ind)
         end do
         if(allocated(p%phip))then ! Store potential
-           p%phip(ipart)=0.0
            do ind=1,twotondim
               p%phip(ipart)=p%phip(ipart)+m%phi(icell(ind),igrid(ind))*vol(ind)
            end do
