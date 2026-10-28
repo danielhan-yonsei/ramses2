@@ -534,6 +534,7 @@ subroutine tsc_kick_drift_part(s,p,ilevel,action_part)
      ! Gather 3-force
      hash_nbor(0)=ilevel+1
      ff(1:ndim)=0.0
+     if(allocated(p%phip))p%phip(ipart)=0.0
      do ind=1,threetondim
         hash_nbor(1:ndim)=ckey(1:ndim,ind)
         ! Get parent cell at level ilevel using read-only cache
@@ -541,6 +542,9 @@ subroutine tsc_kick_drift_part(s,p,ilevel,action_part)
 #ifdef GRAV
         if(igrid>0)then
            ff(1:ndim)=ff(1:ndim)+m%f(icell,1:ndim,igrid)*vol(ind)
+           if(allocated(p%phip))then ! Store potential
+              p%phip(ipart)=p%phip(ipart)+m%phi(icell,igrid)*vol(ind)
+           endif
         end if
 #endif
      end do
@@ -718,6 +722,7 @@ subroutine pcs_kick_drift_part(s,p,ilevel,action_part)
      ! Gather 3-force
      hash_nbor(0)=ilevel+1
      ff(1:ndim)=0.0
+     if(allocated(p%phip))p%phip(ipart)=0.0
      do ind=1,fourtondim
         hash_nbor(1:ndim)=ckey(1:ndim,ind)
         ! Get parent cell at level ilevel using read-only cache
@@ -725,6 +730,9 @@ subroutine pcs_kick_drift_part(s,p,ilevel,action_part)
 #ifdef GRAV
         if(igrid>0)then
            ff(1:ndim)=ff(1:ndim)+m%f(icell,1:ndim,igrid)*vol(ind)
+           if(allocated(p%phip))then ! Store potential
+              p%phip(ipart)=p%phip(ipart)+m%phi(icell,igrid)*vol(ind)
+           endif
         end if
 #endif
      end do
