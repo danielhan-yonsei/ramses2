@@ -545,6 +545,7 @@ subroutine input_refmap_grafic(mdl,r,g,m,ilevel)
   ok_file = ok_file .and. (r%initfile(ilevel+1) .ne.' ')
   if(ok_file)then
      ! Reading the existing file
+     if(g%myid==1)write(*,*)"Reading "//TRIM(filename)
      open(10,file=filename,form='unformatted')
      rewind 10
      read(10) ! skip first line
@@ -557,6 +558,8 @@ subroutine input_refmap_grafic(mdl,r,g,m,ilevel)
      end do
      close(10)
   else
+     ! If a finer level has no mask, this level is not zoomed
+     if(g%myid==1.and.r%initfile(ilevel+1).ne.' ')write(*,*)"Missing "//TRIM(filename)
      init_array(i1_min:i1_max,i2_min:i2_max,i3_min:i3_max) = 0.0d0
   endif
 
