@@ -192,7 +192,7 @@ subroutine cic_kick_drift_part(s,p,ilevel,action_part)
   logical::ok_level
   real(kind=8),dimension(1:nvector,1:ndim)::xana
   real(kind=8),dimension(1:nvector,1:ndim)::fana
-  type(msg_three_realdp)::dummy_three_realdp
+  type(msg_four_realdp)::dummy_four_realdp
 
   associate(r=>s%r,g=>s%g,m=>s%m,mdl=>s%mdl)
 
@@ -257,7 +257,7 @@ subroutine cic_kick_drift_part(s,p,ilevel,action_part)
   endif
 
   ! Open read-only cache
-  call open_cache(mdl, m, pack_size=storage_size(dummy_three_realdp)/32, &
+  call open_cache(mdl, m, pack_size=storage_size(dummy_four_realdp)/32, &
        pack=pack_fetch_kick, unpack=unpack_fetch_kick, bound=init_bound_grav)
 
   ! Loop over particles
@@ -352,13 +352,13 @@ subroutine cic_kick_drift_part(s,p,ilevel,action_part)
 
      ! Gather 3-force
      ff(1:ndim)=0.0
+     if(allocated(p%phip))p%phip(ipart)=0.0
      if(ok_level)then
 #ifdef GRAV
         do ind=1,twotondim
            ff(1:ndim)=ff(1:ndim)+m%f(icell(ind),1:ndim,igrid(ind))*vol(ind)
         end do
         if(allocated(p%phip))then ! Store potential
-           p%phip(ipart)=0.0
            do ind=1,twotondim
               p%phip(ipart)=p%phip(ipart)+m%phi(icell(ind),igrid(ind))*vol(ind)
            end do
@@ -476,7 +476,7 @@ subroutine tsc_kick_drift_part(s,p,ilevel,action_part)
   real(kind=8)::gamma,norm2,fnorm,delta
   real(kind=8),dimension(1:ndim)::ff
   logical::ok_level
-  type(msg_three_realdp)::dummy_three_realdp
+  type(msg_four_realdp)::dummy_four_realdp
 
   associate(r=>s%r,g=>s%g,m=>s%m,mdl=>s%mdl)
 
@@ -493,7 +493,7 @@ subroutine tsc_kick_drift_part(s,p,ilevel,action_part)
   vol_loc=dx_loc**ndim
 
   ! Open read-only cache
-  call open_cache(mdl, m, pack_size=storage_size(dummy_three_realdp)/32, &
+  call open_cache(mdl, m, pack_size=storage_size(dummy_four_realdp)/32, &
        pack=pack_fetch_kick, unpack=unpack_fetch_kick, bound=init_bound_grav)
 
   ! Loop over particles
@@ -655,7 +655,7 @@ subroutine pcs_kick_drift_part(s,p,ilevel,action_part)
   real(kind=8)::gamma,norm2,fnorm,delta
   real(kind=8),dimension(1:ndim)::ff
   logical::ok_level
-  type(msg_three_realdp)::dummy_three_realdp
+  type(msg_four_realdp)::dummy_four_realdp
 
   associate(r=>s%r,g=>s%g,m=>s%m,mdl=>s%mdl)
 
@@ -672,7 +672,7 @@ subroutine pcs_kick_drift_part(s,p,ilevel,action_part)
   vol_loc=dx_loc**ndim
 
   ! Open read-only cache
-  call open_cache(mdl, m, pack_size=storage_size(dummy_three_realdp)/32, &
+  call open_cache(mdl, m, pack_size=storage_size(dummy_four_realdp)/32, &
        pack=pack_fetch_kick, unpack=unpack_fetch_kick, bound=init_bound_grav)
 
   ! Loop over particles
@@ -815,20 +815,21 @@ end subroutine pcs_kick_drift_part
 subroutine pack_fetch_kick(mesh,igrid,msg_size,msg_array)
   use amr_parameters, only: twotondim
   use amr_commons, only: mesh_t
-  use cache_commons, only: msg_three_realdp
+  use cache_commons, only: msg_four_realdp
   type(mesh_t)::mesh
   integer::igrid
   integer::msg_size
   integer,dimension(1:msg_size),optional::msg_array
 
   integer::ind
-  type(msg_three_realdp)::msg
+  type(msg_four_realdp)::msg
 
 #ifdef GRAV
   do ind=1,twotondim
-     msg%realdp_phi(ind)=mesh%f(ind,1,igrid)
-     msg%realdp_phi_old(ind)=mesh%f(ind,2,igrid)
-     msg%realdp_dis(ind)=mesh%f(ind,3,igrid)
+     msg%force(ind,1:3)=mesh%f(ind,1:3,igrid)
+#ifdef OUTPUT_PARTICLE_POTENTIAL
+     msg%phi(ind)=mesh%phi(ind,igrid)
+#endif
   end do
 #endif
 
@@ -842,7 +843,7 @@ end subroutine pack_fetch_kick
 subroutine unpack_fetch_kick(mesh,igrid,msg_size,msg_array,hash_key)
   use amr_parameters, only: ndim, twotondim
   use amr_commons, only: mesh_t
-  use cache_commons, only: msg_three_realdp
+  use cache_commons, only: msg_four_realdp
   type(mesh_t)::mesh
   integer::igrid
   integer::msg_size
@@ -850,7 +851,7 @@ subroutine unpack_fetch_kick(mesh,igrid,msg_size,msg_array,hash_key)
   integer(kind=8),dimension(0:ndim)::hash_key
 
   integer::ind
-  type(msg_three_realdp)::msg
+  type(msg_four_realdp)::msg
 
   mesh%grid(igrid)%lev=hash_key(0)
   mesh%grid(igrid)%ckey(1:ndim)=hash_key(1:ndim)
@@ -858,9 +859,10 @@ subroutine unpack_fetch_kick(mesh,igrid,msg_size,msg_array,hash_key)
 
 #ifdef GRAV
   do ind=1,twotondim
-     mesh%f(ind,1,igrid)=msg%realdp_phi(ind)
-     mesh%f(ind,2,igrid)=msg%realdp_phi_old(ind)
-     mesh%f(ind,3,igrid)=msg%realdp_dis(ind)
+     mesh%f(ind,1:3,igrid)=msg%force(ind,1:3)
+#ifdef OUTPUT_PARTICLE_POTENTIAL
+     mesh%phi(ind,igrid)=msg%phi(ind)
+#endif
   end do
 #endif
 

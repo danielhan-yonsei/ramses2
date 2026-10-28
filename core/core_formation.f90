@@ -411,6 +411,7 @@ subroutine core_formation(mdl,r,g,m,p,c,nstep_coarse,mcore_loc)
            write(*,*)'Increase ncoremax in the namelist'
            call mdl_abort(mdl)
         endif
+        if(allocated(p%phip))p%phip(p%npart)=0.0
         ! Compute core particle position from peak position
         p%xp(p%npart,1)=c%peak_com(j,1)
         p%xp(p%npart,2)=c%peak_com(j,2)

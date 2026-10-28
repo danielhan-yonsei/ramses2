@@ -122,6 +122,7 @@ subroutine star_formation_from_core(s,r,g,star,core,ilevel,mstar_loc)
         write(*,*)'Increase nstarmax in the namelist'
         call mdl_abort(s%mdl)
      endif
+     if(allocated(star%phip))star%phip(star%npart)=0.0
      do idim=1,ndim
         star%xp(star%npart,idim)=core%xp(i,idim)
         star%vp(star%npart,idim)=core%vp(i,idim)

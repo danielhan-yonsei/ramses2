@@ -1205,6 +1205,12 @@ subroutine balance_part(s,p,ilevel)
         mp_tmp=p%mp(ipart)
         p%mp(ipart)=p%mp(jpart)
         p%mp(jpart)=mp_tmp
+        ! Swap potential
+        if(allocated(p%phip))then
+           mp_tmp=p%phip(ipart)
+           p%phip(ipart)=p%phip(jpart)
+           p%phip(jpart)=mp_tmp
+        endif
         ! Swap metallicity
         if(allocated(p%zp))then
            zp_tmp=p%zp(ipart)
@@ -1427,6 +1433,49 @@ subroutine balance_part(s,p,ilevel)
 
   ! Wait for full completion of sends
   call MPI_WAITALL(countsend,reqsend,statuses,info)
+
+  !-------------------------
+  ! Swap potentials
+  !-------------------------
+  if(allocated(p%phip))then
+
+     countrecv=0
+     do icpu=1,g%ncpu
+        nbuffer=recv_cnt(icpu)
+        if(nbuffer>0)then
+           countrecv=countrecv+1
+           istart=recv_oft(icpu)+1
+           call MPI_IRECV(x_recv_buf(istart),nbuffer,MPI_DOUBLE_PRECISION,icpu-1,tag,MPI_COMM_WORLD,reqrecv(countrecv),info)
+        endif
+     end do
+
+     do i=1,send_cnt_tot
+        ipart=p%headp(ilevel)-1+count_loc+i
+        x_send_buf(i)=p%phip(ipart)
+     end do
+
+     countsend=0
+     do icpu=1,g%ncpu
+        nbuffer=send_cnt(icpu)
+        if(nbuffer>0) then
+           countsend=countsend+1
+           istart=send_oft(icpu)+1
+           call MPI_ISEND(x_send_buf(istart),nbuffer,MPI_DOUBLE_PRECISION,icpu-1,tag,MPI_COMM_WORLD,reqsend(countsend),info)
+        end if
+     end do
+
+     ! Wait for full completion of receives
+     call MPI_WAITALL(countrecv,reqrecv,statuses,info)
+
+     do i=1,recv_cnt_tot
+        ipart=p%headp(ilevel)-1+count_loc+i
+        p%phip(ipart)=x_recv_buf(i)
+     end do
+
+     ! Wait for full completion of sends
+     call MPI_WAITALL(countsend,reqsend,statuses,info)
+
+  endif
 
   !-------------------------
   ! Swap metallicities
