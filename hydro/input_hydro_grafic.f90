@@ -488,6 +488,16 @@ subroutine input_refmap_grafic(mdl,r,g,m,ilevel)
   logical::error,ok_file
   character(LEN=flen)::filename
 
+  ! Report refinement mask status (before the early return: rank 1 may hold no oct)
+  filename=TRIM(r%initfile(ilevel))//'/ic_refmap'
+  INQUIRE(file=filename,exist=ok_file)
+  ok_file = ok_file .and. (r%initfile(ilevel+1) .ne.' ')
+  if(g%myid==1)then
+     if(ok_file)write(*,*)"Reading "//TRIM(filename)
+     ! If a finer level has no mask, this level is not zoomed
+     if(.not.ok_file.and.r%initfile(ilevel+1).ne.' ')write(*,*)"Missing "//TRIM(filename)
+  endif
+
   if(m%noct(ilevel)==0)return
 
 #if NDIM==3
@@ -540,12 +550,8 @@ subroutine input_refmap_grafic(mdl,r,g,m,ilevel)
   allocate(init_plane(1:g%n1(ilevel),1:g%n2(ilevel)))
 
   ! Read refinement mask
-  filename=TRIM(r%initfile(ilevel))//'/ic_refmap'
-  INQUIRE(file=filename,exist=ok_file)
-  ok_file = ok_file .and. (r%initfile(ilevel+1) .ne.' ')
   if(ok_file)then
      ! Reading the existing file
-     if(g%myid==1)write(*,*)"Reading "//TRIM(filename)
      open(10,file=filename,form='unformatted')
      rewind 10
      read(10) ! skip first line
@@ -558,8 +564,6 @@ subroutine input_refmap_grafic(mdl,r,g,m,ilevel)
      end do
      close(10)
   else
-     ! If a finer level has no mask, this level is not zoomed
-     if(g%myid==1.and.r%initfile(ilevel+1).ne.' ')write(*,*)"Missing "//TRIM(filename)
      init_array(i1_min:i1_max,i2_min:i2_max,i3_min:i3_max) = 0.0d0
   endif
 
