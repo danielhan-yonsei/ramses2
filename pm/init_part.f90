@@ -11,9 +11,7 @@ recursive subroutine r_init_part(pst)
   use mdl_parameters
 #ifdef _CUDA
   use gpu_manager
-#ifdef CORE
   use core_formation_module, only: gpu_allocate_phew
-#endif
 #elif defined(_METAL)
   use metal_runner
 #endif
@@ -49,7 +47,6 @@ recursive subroutine r_init_part(pst)
         call gpu_allocate_sink(pst%s)
 #endif
      end if
-#ifdef CORE
      if(pst%s%r%core)then
         call init_core(pst%s%r,pst%s%g,pst%s%core)
 #ifdef _CUDA
@@ -57,7 +54,6 @@ recursive subroutine r_init_part(pst)
         if(pst%s%r%core_form)call gpu_allocate_phew(pst%s)
 #endif
      end if
-#endif
      if(pst%s%r%tree)then
         call init_tree(pst%s%r,pst%s%g,pst%s%tree)
 #ifdef _CUDA
@@ -215,7 +211,6 @@ end subroutine init_sink
 !#########################################################################
 !#########################################################################
 !#########################################################################
-#ifdef CORE
 subroutine init_core(r,g,p)
   use amr_parameters, only: ndim
   use amr_commons, only: run_t,global_t
@@ -261,7 +256,6 @@ subroutine init_core(r,g,p)
   p%headp=1
   p%tailp=0
 end subroutine init_core
-#endif
 !#########################################################################
 !#########################################################################
 !#########################################################################

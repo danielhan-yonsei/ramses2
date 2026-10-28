@@ -15,9 +15,7 @@ subroutine m_input_part_restart(pst)
   use ramses_commons, only: pst_t
   use output_amr_module, only: input_header
   use pm_parameters, only: PART_TYPE, STAR_TYPE, SINK_TYPE, TREE_TYPE
-#ifdef CORE
   use pm_parameters, only: CORE_TYPE
-#endif
   implicit none
   type(pst_t)::pst
   !--------------------------------------------------------------------
@@ -146,7 +144,6 @@ subroutine m_input_part_restart(pst)
 
   endif
 
-#ifdef CORE
   if(pst%s%r%core)then
 
      ! Read core particle files header
@@ -184,7 +181,6 @@ subroutine m_input_part_restart(pst)
      deallocate(npart_file)
 
   endif
-#endif
 
   if(pst%s%r%tree)then
 
@@ -231,9 +227,7 @@ recursive subroutine r_input_part_restart(pst,input_array,input_size,output,outp
   use mdl_module
   use ramses_commons, only: pst_t
   use pm_parameters, only: PART_TYPE, STAR_TYPE, SINK_TYPE, TREE_TYPE
-#ifdef CORE
   use pm_parameters, only: CORE_TYPE
-#endif
   use mdl_parameters
   implicit none
   type(pst_t)::pst
@@ -266,11 +260,9 @@ recursive subroutine r_input_part_restart(pst,input_array,input_size,output,outp
      if(p_type==SINK_TYPE)then
         call input_part_restart(pst%s%r,pst%s%g,pst%s%sink,input_size-1,input_array(2:input_size),output%mass)
      endif
-#ifdef CORE
      if(p_type==CORE_TYPE)then
         call input_part_restart(pst%s%r,pst%s%g,pst%s%core,input_size-1,input_array(2:input_size),output%mass)
      endif
-#endif
      if(p_type==TREE_TYPE)then
         call input_part_restart(pst%s%r,pst%s%g,pst%s%tree,input_size-1,input_array(2:input_size),output%mass)
      endif
@@ -285,9 +277,7 @@ subroutine input_part_restart(r,g,p,ncpu_file,npart_file,mpart_loc)
   use amr_parameters, only: ndim, dp, i8b, flen
   use amr_commons, only: run_t, global_t
   use pm_parameters, only: PART_TYPE, STAR_TYPE, SINK_TYPE, TREE_TYPE
-#ifdef CORE
   use pm_parameters, only: CORE_TYPE
-#endif
   use pm_commons, only: part_t
   implicit none
   type(run_t)::r
@@ -361,9 +351,7 @@ subroutine input_part_restart(r,g,p,ncpu_file,npart_file,mpart_loc)
   if(p%type==PART_TYPE)prefix='part'
   if(p%type==STAR_TYPE)prefix='star'
   if(p%type==SINK_TYPE)prefix='sink'
-#ifdef CORE
   if(p%type==CORE_TYPE)prefix='core'
-#endif
   if(p%type==TREE_TYPE)prefix='tree'
 
   ! Loop over relevant files

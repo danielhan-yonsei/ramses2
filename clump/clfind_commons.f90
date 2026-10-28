@@ -40,7 +40,6 @@ module clfind_commons
        real(kind=8),allocatable,dimension(:) :: min_dens ! Min density of the clump
        real(kind=8),allocatable,dimension(:) :: clump_vol ! Volume of the clump
        real(kind=8),allocatable,dimension(:) :: clump_rad ! Tidal radius of the clump
-#ifdef CORE
        real(kind=8),allocatable,dimension(:) :: clump_mass4 ! Mass within 4 finest-cell widths of the peak
        real(kind=8),allocatable,dimension(:) :: kinetic_support ! Internal kinetic virial support term
        real(kind=8),allocatable,dimension(:) :: thermal_support ! Thermal pressure virial support term
@@ -50,7 +49,6 @@ module clfind_commons
        real(kind=8),allocatable,dimension(:) :: virial_ratio ! support / abs(grav_term)
        logical,allocatable,dimension(:) :: bound ! True when the kinetic and thermal terms are each below abs(grav_term)
        logical,allocatable,dimension(:) :: contracting ! True when dI/dt < 0 for the clump gas
-#endif
        real(kind=8),allocatable,dimension(:) :: particle_mass ! Clump mass using directly dark matter particles
        real(kind=8),allocatable,dimension(:,:) :: peak_pos ! Position of the peak
        real(kind=8),allocatable,dimension(:,:) :: peak_vel ! Velocity of the peak
@@ -69,9 +67,7 @@ module clfind_commons
        integer(i8b),allocatable,dimension(:) :: min_tree_id ! Minimum tree id in clump
 
        integer,allocatable,dimension(:) :: nsink ! Number of sinks per clump
-#ifdef CORE
        integer,allocatable,dimension(:) :: ncore ! Number of cores per clump
-#endif
        integer,allocatable,dimension(:) :: form_sink ! Does peak form a new sink particle?
 
        ! Software cache array for peaks

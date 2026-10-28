@@ -1,9 +1,7 @@
 module newdt_fine_module
 #ifdef _CUDA
   use part_device, only: gpu_newdt_part, gpu_newdt_star, gpu_newdt_sink, gpu_newdt_tree
-#ifdef CORE
   use part_device, only: gpu_newdt_core
-#endif
 #elif defined(_METAL)
   use metal_runner, only: metal_newdt_part
 #endif
@@ -252,9 +250,7 @@ recursive subroutine r_newdt_part(pst,ilevel,input_size,output,output_size)
      if (pst%s%r%part) call gpu_newdt_part(pst%s, ilevel, output%vmax, output%ekin)
      if (pst%s%r%star) call gpu_newdt_star(pst%s, ilevel, output%vmax, output%ekin)
      if (pst%s%r%sink) call gpu_newdt_sink(pst%s, ilevel, output%vmax, output%ekin)
-#ifdef CORE
      if (pst%s%r%core) call gpu_newdt_core(pst%s, ilevel, output%vmax, output%ekin)
-#endif
      if (pst%s%r%tree) call gpu_newdt_tree(pst%s, ilevel, output%vmax, output%ekin)
      return
 #elif defined(_METAL)
@@ -267,9 +263,7 @@ recursive subroutine r_newdt_part(pst,ilevel,input_size,output,output_size)
      if (pst%s%r%tree) call newdt_part(pst%s%r,pst%s%g,pst%s%tree,ilevel,output%ekin,output%vmax)
      if (pst%s%r%trac) call newdt_part(pst%s%r,pst%s%g,pst%s%trac,ilevel,output%ekin,output%vmax)
      if (pst%s%r%dust) call newdt_part(pst%s%r,pst%s%g,pst%s%dust,ilevel,output%ekin,output%vmax)
-#ifdef CORE
      if (pst%s%r%core) call newdt_part(pst%s%r,pst%s%g,pst%s%core,ilevel,output%ekin,output%vmax)
-#endif
   endif
 
 end subroutine r_newdt_part

@@ -3,9 +3,7 @@ module params_module
 contains
 
 subroutine m_read_params(pst)
-#ifdef CORE
   use core_params_module, only: read_core_params,core_to_star_mass
-#endif
   use amr_parameters
   use hydro_parameters
   use rt_parameters, only: nrtgrp
@@ -727,9 +725,7 @@ subroutine m_read_params(pst)
        & analytic_dust_force
   ! Star particles and star formation recipe
   namelist/star_params/star,nstarmax,nstartot,T2_star,n_star,eps_star,seed,m_star,sf_model
-#ifdef CORE
   namelist/star_params/core_to_star_mass
-#endif
   ! Sink particles and black hole parameters
   namelist/sink_params/sink,nsinkmax,nsinktot,rho_type_sink &
        & ,sink_recenter_on_peak,sink_descent,fudge_descent &
@@ -1101,9 +1097,7 @@ subroutine m_read_params(pst)
      if(ndustmax==0)dust=.false.
   endif
 
-#ifdef CORE
   call read_core_params(1,s,star,nml_ok)
-#endif
   close(1)
 
   !-----------------

@@ -40,7 +40,6 @@ MACRO_TO_MAKE = {
     'DO_RTZ': 'DO_RTZ',
     'TURB':   'TURB',
     'DO_CR':  'DO_CR',
-    'CORE':   'CORE',
 }
 
 # Macros whose guard is a full literal ifeq string (not the $(VAR),1 pattern)

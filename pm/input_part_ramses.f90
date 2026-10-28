@@ -15,9 +15,7 @@ subroutine m_input_part_ramses(pst)
   use ramses_commons, only: pst_t
   use output_amr_module, only: input_header
   use pm_parameters, only: PART_TYPE, STAR_TYPE, SINK_TYPE, TREE_TYPE
-#ifdef CORE
   use pm_parameters, only: CORE_TYPE
-#endif
   implicit none
   type(pst_t)::pst
   !--------------------------------------------------------------------
@@ -143,7 +141,6 @@ subroutine m_input_part_ramses(pst)
 
   endif
 
-#ifdef CORE
   if(pst%s%r%core)then
 
      ! Read core particle files header
@@ -180,7 +177,6 @@ subroutine m_input_part_ramses(pst)
      deallocate(npart_file)
 
   endif
-#endif
 
 end subroutine m_input_part_ramses
 !#########################################################################
@@ -191,9 +187,7 @@ recursive subroutine r_input_part_ramses(pst,input_array,input_size,output,outpu
   use mdl_module
   use ramses_commons, only: pst_t
   use pm_parameters, only: PART_TYPE, STAR_TYPE, SINK_TYPE, TREE_TYPE
-#ifdef CORE
   use pm_parameters, only: CORE_TYPE
-#endif
   use mdl_parameters
   implicit none
   type(pst_t)::pst
@@ -226,11 +220,9 @@ recursive subroutine r_input_part_ramses(pst,input_array,input_size,output,outpu
      if(p_type==SINK_TYPE)then
         call input_part_ramses(pst%s%r,pst%s%g,pst%s%sink,input_size-1,input_array(2:input_size),output%mass)
      endif
-#ifdef CORE
      if(p_type==CORE_TYPE)then
         call input_part_ramses(pst%s%r,pst%s%g,pst%s%core,input_size-1,input_array(2:input_size),output%mass)
      endif
-#endif
   endif
 
 end subroutine r_input_part_ramses
@@ -242,9 +234,7 @@ subroutine input_part_ramses(r,g,p,ncpu_file,npart_file,mpart_loc)
   use amr_parameters, only: ndim, i8b, flen
   use amr_commons, only: run_t, global_t
   use pm_parameters, only: PART_TYPE, STAR_TYPE, SINK_TYPE
-#ifdef CORE
   use pm_parameters, only: CORE_TYPE
-#endif
   use pm_commons, only: part_t
   implicit none
   type(run_t)::r
@@ -317,9 +307,7 @@ subroutine input_part_ramses(r,g,p,ncpu_file,npart_file,mpart_loc)
   if(p%type==PART_TYPE)prefix='part'
   if(p%type==STAR_TYPE)prefix='star'
   if(p%type==SINK_TYPE)prefix='sink'
-#ifdef CORE
   if(p%type==CORE_TYPE)prefix='core'
-#endif
 
   ! Loop over relevant files
   ipart=0

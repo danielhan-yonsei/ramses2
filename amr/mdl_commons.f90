@@ -148,7 +148,6 @@ module mdl_parameters
      enumerator::MDL_SET_CRUNEW
      enumerator::MDL_SET_CRUOLD
      enumerator::MDL_CONSERVE_CR_FLUX
-#ifdef CORE
      enumerator::MDL_INPUT_CORE_ASCII
      enumerator::MDL_OUTPUT_CORE_CLUMP
      enumerator::MDL_CORE_FORMATION
@@ -157,7 +156,6 @@ module mdl_parameters
      enumerator::MDL_CORE_MERGER
      enumerator::MDL_CORE_RETIREMENT
      enumerator::MDL_CORE_TO_STAR_FORMATION
-#endif
   end enum
 
   ! Maximum number of cpus

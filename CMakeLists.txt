@@ -84,7 +84,6 @@ option(DO_RTZ "Activate RTZ (metal-line RT) solver"    OFF)
 option(DO_CR  "Activate cosmic rays"                   OFF)
 option(TURB   "Activate turbulence driving"            OFF)
 option(TRCFLX "Activate tracer-flux advection"         OFF)
-option(CORE   "Activate core particles (needs NDIM=3, HYDRO)" OFF)
 
 # Build options
 option(DEBUG        "Enable debug compilation flags"               OFF)
@@ -123,7 +122,7 @@ endif()
 # NVAR = 5 (hydro) + NENER + NPSCAL + NMETAL + NION
 math(EXPR NVAR "5 + ${NENER} + ${NPSCAL} + ${NMETAL} + ${NION}")
 
-cmake_print_variables(COMPILER NDIM NVAR NENER NION NRTGRP NCRGRP UNITS INIT HYDRO GRAV MHD DO_RT DO_RTZ DO_CR TURB CORE)
+cmake_print_variables(COMPILER NDIM NVAR NENER NION NRTGRP NCRGRP UNITS INIT HYDRO GRAV MHD DO_RT DO_RTZ DO_CR TURB)
 
 # =============================================================================
 # Preprocessor defines
@@ -186,9 +185,6 @@ if(TURB)
 endif()
 if(TRCFLX)
     list(APPEND defines TRCFLX)
-endif()
-if(CORE)
-    list(APPEND defines CORE)
 endif()
 if(NOT MPI)
     list(APPEND defines WITHOUTMPI)
@@ -547,20 +543,18 @@ else()
 endif()
 
 # Core particles
-if(CORE)
-    list(APPEND fortran_files
-        core/core_params.f90
-        core/core_sf_support.f90
-        core/star_formation_common.f90
-        core/core_to_star_formation.f90
-        core/core_clump_output.f90
-        core/core_formation.f90
-        core/core_evolution.f90
-        core/core_retirement.f90
-        core/core_merger.f90
-        core/core_step.f90
-    )
-endif()
+list(APPEND fortran_files
+    core/core_params.f90
+    core/core_sf_support.f90
+    core/star_formation_common.f90
+    core/core_to_star_formation.f90
+    core/core_clump_output.f90
+    core/core_formation.f90
+    core/core_evolution.f90
+    core/core_retirement.f90
+    core/core_merger.f90
+    core/core_step.f90
+)
 
 # =============================================================================
 # NVHPC / GPU sources
@@ -585,6 +579,10 @@ if(CMAKE_Fortran_COMPILER_ID STREQUAL "NVHPC")
         gpu/gpu_clump.cuf
         gpu/gpu_sink.cuf
         gpu/gpu_part.cuf
+        gpu/gpu_core.cuf
+        gpu/gpu_core_merger.cuf
+        gpu/gpu_core_star.cuf
+        gpu/gpu_phew.cuf
     )
     list(APPEND fortran_files ${gpu_cuf_files} gpu/gpu_manager.cuf)
     set_source_files_properties(${gpu_cuf_files} PROPERTIES LANGUAGE Fortran)
@@ -804,6 +802,18 @@ if(CMAKE_Fortran_COMPILER_ID STREQUAL "NVHPC")
     set_source_files_properties(gpu/gpu_manager.cuf
         PROPERTIES OBJECT_DEPENDS "${_gpu_obj_dir}/gpu_runner.cuf.o")
 
+    set_source_files_properties(gpu/gpu_core.cuf
+        PROPERTIES OBJECT_DEPENDS "${_gpu_obj_dir}/gpu_utils.cuf.o;${_gpu_obj_dir}/gpu_feedback.cuf.o;${_gpu_obj_dir}/gpu_runner.cuf.o;${_gpu_obj_dir}/gpu_sink.cuf.o")
+
+    set_source_files_properties(gpu/gpu_core_merger.cuf
+        PROPERTIES OBJECT_DEPENDS "${_gpu_obj_dir}/gpu_utils.cuf.o;${_gpu_obj_dir}/gpu_feedback.cuf.o;${_gpu_obj_dir}/gpu_runner.cuf.o")
+
+    set_source_files_properties(gpu/gpu_core_star.cuf
+        PROPERTIES OBJECT_DEPENDS "${_gpu_obj_dir}/gpu_utils.cuf.o;${_gpu_obj_dir}/gpu_runner.cuf.o")
+
+    set_source_files_properties(gpu/gpu_phew.cuf
+        PROPERTIES OBJECT_DEPENDS "${_gpu_obj_dir}/gpu_utils.cuf.o;${_gpu_obj_dir}/gpu_runner.cuf.o;${_gpu_obj_dir}/gpu_clump.cuf.o;${_gpu_obj_dir}/gpu_part.cuf.o")
+
     # Step 2 – scan non-GPU sources for GPU module USE statements
     foreach(_src IN LISTS fortran_files)
         if(IS_ABSOLUTE "${_src}")
@@ -841,6 +851,26 @@ if(CMAKE_Fortran_COMPILER_ID STREQUAL "NVHPC")
         file(STRINGS "${_full}" _use_manager REGEX "[Uu][Ss][Ee][ \t]+gpu_manager([ \t,;]|$)")
         if(_use_manager)
             list(APPEND _deps "${_gpu_obj_dir}/gpu_manager.cuf.o")
+        endif()
+
+        file(STRINGS "${_full}" _use_core REGEX "[Uu][Ss][Ee][ \t]+core_device([ \t,;]|$)")
+        if(_use_core)
+            list(APPEND _deps "${_gpu_obj_dir}/gpu_core.cuf.o")
+        endif()
+
+        file(STRINGS "${_full}" _use_core_merger REGEX "[Uu][Ss][Ee][ \t]+core_merger_device([ \t,;]|$)")
+        if(_use_core_merger)
+            list(APPEND _deps "${_gpu_obj_dir}/gpu_core_merger.cuf.o")
+        endif()
+
+        file(STRINGS "${_full}" _use_core_star REGEX "[Uu][Ss][Ee][ \t]+core_star_device([ \t,;]|$)")
+        if(_use_core_star)
+            list(APPEND _deps "${_gpu_obj_dir}/gpu_core_star.cuf.o")
+        endif()
+
+        file(STRINGS "${_full}" _use_phew REGEX "[Uu][Ss][Ee][ \t]+phew_device([ \t,;]|$)")
+        if(_use_phew)
+            list(APPEND _deps "${_gpu_obj_dir}/gpu_phew.cuf.o")
         endif()
 
         if(_deps)

@@ -85,13 +85,11 @@ subroutine m_clump_finder(pst,create_output,keep_alive)
         filename=TRIM(filedir)//'peak_tree_header.txt'
         call output_peak_header(r,g,tree,filename)
      endif
-#ifdef CORE
      if(r%output_peak_core.and.r%core)then
         write(*,*)'Writing peak core files'
         filename=TRIM(filedir)//'peak_core_header.txt'
         call output_peak_header(r,g,pst%s%core,filename)
      endif
-#endif
      call r_output_clump(pst,input_array,flen/4,dummy,0)
 
      ! In clump_only mode, also write the particles in the order matching the peak files
@@ -123,12 +121,10 @@ subroutine m_clump_finder(pst,create_output,keep_alive)
            filename=TRIM(filedir)//'dust_header.txt'
            call output_header(r,g,pst%s%dust,filename)
         endif
-#ifdef CORE
         if(r%core)then
            filename=TRIM(filedir)//'core_header.txt'
            call output_header(r,g,pst%s%core,filename)
         endif
-#endif
         call r_output_part(pst,input_array,flen/4,dummy,0)
      endif
      call m_timer('clump','start')
@@ -256,11 +252,9 @@ subroutine clump_finder(s)
   if(s%r%sink)then
      call particle_peak_id(s,s%sink)
   endif
-#ifdef CORE
   if(s%r%core)then
      call particle_peak_id(s,s%core)
   endif
-#endif
   if(s%r%tree)then
      call particle_peak_id(s,s%tree)
   endif
@@ -320,11 +314,9 @@ subroutine clump_finder(s)
      if(s%r%sink)then
         call particle_halo_id(s,s%sink)
      endif
-#ifdef CORE
      if(s%r%core)then
         call particle_halo_id(s,s%core)
      endif
-#endif
      if(s%r%tree)then
         call particle_halo_id(s,s%tree)
      endif
@@ -333,9 +325,7 @@ subroutine clump_finder(s)
      if(s%r%part)s%p%hid=s%p%pid
      if(s%r%star)s%star%hid=s%star%pid
      if(s%r%sink)s%sink%hid=s%sink%pid
-#ifdef CORE
      if(s%r%core)s%core%hid=s%core%pid
-#endif
      if(s%r%tree)s%tree%hid=s%tree%pid
   endif
 #endif

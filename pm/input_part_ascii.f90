@@ -17,9 +17,7 @@ subroutine m_input_part_ascii(pst)
   real(kind=8)::xx1,xx2,xx3,vv1,vv2,vv3,mm1,zz1,tt1,jj1,jj2,jj3
   integer(kind=8)::npart_tot,nstar_tot,nsink_tot
   character(LEN=flen)::filename
-#ifdef CORE
   integer(kind=8)::ncore_tot
-#endif
   integer,allocatable,dimension(:)::input_array
   logical::file_exist
 
@@ -177,7 +175,6 @@ subroutine m_input_part_ascii(pst)
 
   endif
 
-#ifdef CORE
   if(s%r%core)then
 
      ! Compute total number of cores in file
@@ -227,7 +224,6 @@ subroutine m_input_part_ascii(pst)
      endif
 
   endif
-#endif
 
   end associate
 
@@ -662,7 +658,6 @@ end subroutine input_sink_ascii
 !#########################################################################
 !#########################################################################
 !#########################################################################
-#ifdef CORE
 recursive subroutine r_input_core_ascii(pst,input_array,input_size)
   use mdl_module
   use ramses_commons, only: pst_t
@@ -809,7 +804,6 @@ subroutine input_core_ascii(mdl,r,g,p,npart_tot)
   if(allocated(p%nacc))p%nacc(1:p%npart)=0
 
 end subroutine input_core_ascii
-#endif
 !#########################################################################
 !#########################################################################
 !#########################################################################

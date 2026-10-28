@@ -17,9 +17,7 @@ module ramses_commons
      type(part_t)::p
      type(part_t)::star
      type(part_t)::sink
-#ifdef CORE
      type(part_t)::core
-#endif
      type(part_t)::tree
      type(part_t)::trac
      type(part_t)::dust

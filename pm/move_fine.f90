@@ -2,9 +2,7 @@ module move_fine_module
   use rho_fine_module, only: cic_weight, cic_index, tsc_weight, tsc_index, pcs_weight, pcs_index
 #ifdef _CUDA
   use part_device, only: gpu_kick_drift_part, gpu_kick_drift_star, gpu_kick_drift_sink, gpu_kick_drift_tree
-#ifdef CORE
   use part_device, only: gpu_kick_drift_core
-#endif
 #elif defined(_METAL)
   use metal_runner, only: metal_kick_drift_part
 #endif
@@ -71,9 +69,7 @@ recursive subroutine r_kick_drift_part(pst,input_array,input_size,output_array,o
      if (pst%s%r%part) call gpu_kick_drift_part(pst%s, ilevel, action_part)
      if (pst%s%r%star) call gpu_kick_drift_star(pst%s, ilevel, action_part)
      if (pst%s%r%sink) call gpu_kick_drift_sink(pst%s, ilevel, action_part)
-#ifdef CORE
      if (pst%s%r%core) call gpu_kick_drift_core(pst%s, ilevel, action_part)
-#endif
      if (pst%s%r%tree) call gpu_kick_drift_tree(pst%s, ilevel, action_part)
 #elif defined(_METAL)
      if (pst%s%r%part) call metal_kick_drift_part(pst%s, ilevel, action_part)
@@ -105,7 +101,6 @@ recursive subroutine r_kick_drift_part(pst,input_array,input_size,output_array,o
            call pcs_kick_drift_part(pst%s,pst%s%sink,ilevel,action_part)
         endif
      endif
-#ifdef CORE
      if(pst%s%r%core)then
         if(pst%s%r%sink_force_interpolation_scheme==1)then
            call cic_kick_drift_part(pst%s,pst%s%core,ilevel,action_part)
@@ -115,7 +110,6 @@ recursive subroutine r_kick_drift_part(pst,input_array,input_size,output_array,o
            call pcs_kick_drift_part(pst%s,pst%s%core,ilevel,action_part)
         endif
      endif
-#endif
      if(pst%s%r%tree)then
         if(pst%s%r%tree_force_interpolation_scheme==1)then
            call cic_kick_drift_part(pst%s,pst%s%tree,ilevel,action_part)
@@ -412,9 +406,7 @@ subroutine cic_kick_drift_part(s,p,ilevel,action_part)
 
         ! Store force for sink particles
         if(p%type==SINK_TYPE)p%fp(ipart,1:ndim)=ff(1:ndim)
-#ifdef CORE
         if(p%type==CORE_TYPE)p%fp(ipart,1:ndim)=ff(1:ndim)
-#endif
 
      else if(action_part.EQ.action_kick_only)then
 
@@ -593,9 +585,7 @@ subroutine tsc_kick_drift_part(s,p,ilevel,action_part)
 
         ! Store force for sink particles
         if(p%type==SINK_TYPE)p%fp(ipart,1:ndim)=ff(1:ndim)
-#ifdef CORE
         if(p%type==CORE_TYPE)p%fp(ipart,1:ndim)=ff(1:ndim)
-#endif
 
      else if(action_part.EQ.action_kick_only)then
 
@@ -779,9 +769,7 @@ subroutine pcs_kick_drift_part(s,p,ilevel,action_part)
 
         ! Store force for sink particles
         if(p%type==SINK_TYPE)p%fp(ipart,1:ndim)=ff(1:ndim)
-#ifdef CORE
         if(p%type==CORE_TYPE)p%fp(ipart,1:ndim)=ff(1:ndim)
-#endif
 
      else if(action_part.EQ.action_kick_only)then
 

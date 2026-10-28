@@ -38,12 +38,10 @@ recursive subroutine r_output_part(pst,input_array,input_size,output_array,outpu
            filename2=TRIM(filename)//'sink.'
            call backup_part(pst%s%r,pst%s%g,pst%s%sink,filename2)
         endif
-#ifdef CORE
         if(pst%s%r%core)then
            filename2=TRIM(filename)//'core.'
            call backup_part(pst%s%r,pst%s%g,pst%s%core,filename2)
         endif
-#endif
         if(pst%s%r%tree)then
            filename2=TRIM(filename)//'tree.'
            call backup_part(pst%s%r,pst%s%g,pst%s%tree,filename2)
@@ -70,12 +68,10 @@ recursive subroutine r_output_part(pst,input_array,input_size,output_array,outpu
            filename2=TRIM(filename)//'sink.'
            call output_part(pst%s,pst%s%sink,filename2)
         endif
-#ifdef CORE
         if(pst%s%r%core)then
            filename2=TRIM(filename)//'core.'
            call output_part(pst%s,pst%s%core,filename2)
         endif
-#endif
         if(pst%s%r%tree)then
            filename2=TRIM(filename)//'tree.'
            call output_part(pst%s,pst%s%tree,filename2)

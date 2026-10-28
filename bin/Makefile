@@ -13,7 +13,6 @@ MHD = 0
 DO_RT = 0
 DO_CR = 0
 DO_RTZ = 0
-CORE = 0
 INIT =
 UNITS =
 NENER = 0
@@ -117,9 +116,6 @@ ifeq ($(DO_RT),1)
 endif
 ifeq ($(DO_RTZ),1)
    DEFINES += -DDO_RTZ
-endif
-ifeq ($(CORE),1)
-   DEFINES += -DCORE
 endif
 ifneq ($(NVECTOR),32)
    DEFINES += -DNVECTOR=$(NVECTOR)
@@ -352,14 +348,12 @@ MODOBJ +=  multigrid_fine_coarse.o rho_fine.o upload.o init_xion.o \
 	 rt_star_feedback.o sink_formation.o tree_formation.o \
 	 sink_evolution.o sink_merger.o task_manager.o rt_step.o cr_step.o amr_step.o \
 	 adaptive_loop.o write_gitinfo.o
-ifeq ($(CORE),1)
-   MODOBJ += core_params.o core_sf_support.o star_formation_common.o
-   ifeq ($(COMPILER),NVHPC)
-      MODOBJ += gpu_core.o gpu_core_merger.o gpu_core_star.o gpu_phew.o
-   endif
-   MODOBJ += core_to_star_formation.o core_clump_output.o core_formation.o core_evolution.o \
-      core_retirement.o core_merger.o core_step.o
+MODOBJ += core_params.o core_sf_support.o star_formation_common.o
+ifeq ($(COMPILER),NVHPC)
+   MODOBJ += gpu_core.o gpu_core_merger.o gpu_core_star.o gpu_phew.o
 endif
+MODOBJ += core_to_star_formation.o core_clump_output.o core_formation.o core_evolution.o \
+	 core_retirement.o core_merger.o core_step.o
 #############################################################################
 ramses:	$(MODOBJ) ramses.o $(METAL_METALLIB)
 	$(F90) $(FFLAGS) $(MODOBJ) ramses.o -o $(EXEC)$(NDIM)d $(LIBS)

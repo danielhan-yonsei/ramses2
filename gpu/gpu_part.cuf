@@ -19,11 +19,9 @@ module part_device
        & tree_levelp, tree_sortp, tree_idp, tree_idm, tree_idt, &
        & xp_swap, isp_swap, idp_swap, &
        & gpu_scan, gpu_scan_dp, d_skip
-#ifdef CORE
   use gpu_runner, only: core_xp, core_vp, core_fp, core_jp, core_mp, core_zp, &
        & core_tp, core_up, core_levelp, core_nacc, core_sortp, core_idp, &
        & prefix_sum_phys
-#endif
 #if defined(CUB_SORT_PART)
   use gpu_runner, only: hkeyp
 #endif
@@ -199,7 +197,6 @@ attributes(global) subroutine write_swap_global_hilbert_partition( &
 
 end subroutine write_swap_global_hilbert_partition
 
-#ifdef CORE
 !> Coarse/fine partition as split_part: coarse particles in sortp order,
 !> fine particles in row order (prefix_sum_phys).
 ! Written by Daniel Han (mini-ramses version October 2026).
@@ -246,7 +243,6 @@ attributes(global) subroutine write_swap_global_cpu_partition( &
   endif
 
 end subroutine write_swap_global_cpu_partition
-#endif
 
 !> Column gather/scatter via xp_swap.
 attributes(global) subroutine sort_gather_part_real_col(buf, src, swap_global_d, &
@@ -818,7 +814,6 @@ subroutine gpu_split_sink(sim, ilevel)
 
 end subroutine gpu_split_sink
 
-#ifdef CORE
 !> GPU split_part for cores, in the row order of the host: coarse particles
 !> in sortp order, fine particles in their previous row order.
 ! Written by Daniel Han (mini-ramses version October 2026).
@@ -986,7 +981,6 @@ subroutine gpu_split_core(sim, ilevel)
   end do
 
 end subroutine gpu_split_core
-#endif
 
 subroutine gpu_split_tree(sim, ilevel)
   use nvtx
@@ -1525,7 +1519,6 @@ subroutine gpu_sort_sink(sim, ilevel)
 
 end subroutine gpu_sort_sink
 
-#ifdef CORE
 !> GPU sort_part for cores, with the stable key of the host sort_part.
 subroutine gpu_sort_core(sim, ilevel)
   use nvtx
@@ -1613,7 +1606,6 @@ subroutine gpu_sort_core(sim, ilevel)
   call nvtxEndRange()
 
 end subroutine gpu_sort_core
-#endif
 
 subroutine gpu_sort_tree(sim, ilevel)
   use nvtx
@@ -2391,7 +2383,6 @@ subroutine gpu_cic_sink_large(sim, ilevel, rtype)
 
 end subroutine gpu_cic_sink_large
 
-#ifdef CORE
 subroutine gpu_cic_core_large(sim, ilevel, rtype)
   use nvtx
   use ramses_commons, only: ramses_t
@@ -2455,7 +2446,6 @@ subroutine gpu_cic_core_large(sim, ilevel, rtype)
   call nvtxEndRange()
 
 end subroutine gpu_cic_core_large
-#endif
 
 !################################################################
 !  GPU CIC medium-stencil deposit (part_dep_algo = 2)
@@ -3728,7 +3718,6 @@ subroutine gpu_bspline_sink(sim, ilevel, rtype, order)
 
 end subroutine gpu_bspline_sink
 
-#ifdef CORE
 !> Host dispatcher for the GPU TSC/PCS deposit of core particles
 !> (order = sink_mass_deposition_scheme + 1, cores use the sink schemes).
 subroutine gpu_bspline_core(sim, ilevel, rtype, order)
@@ -3792,7 +3781,6 @@ subroutine gpu_bspline_core(sim, ilevel, rtype, order)
   call nvtxEndRange()
 
 end subroutine gpu_bspline_core
-#endif
 
 !> Per-level particle Courant reduction. Computes vmax = MAX|vp| and
 !> ekin = SUM 0.5*mp*|vp|^2 over particles in level ilevel from device vp/mp
@@ -3917,7 +3905,6 @@ subroutine gpu_newdt_sink(sim, ilevel, vmax, ekin)
 
 end subroutine gpu_newdt_sink
 
-#ifdef CORE
 subroutine gpu_newdt_core(sim, ilevel, vmax, ekin)
   use nvtx
   use ramses_commons, only: ramses_t
@@ -3957,7 +3944,6 @@ subroutine gpu_newdt_core(sim, ilevel, vmax, ekin)
   ekin = ekin + ekin_host
 
 end subroutine gpu_newdt_core
-#endif
 
 subroutine gpu_newdt_tree(sim, ilevel, vmax, ekin)
   use nvtx
@@ -4466,7 +4452,6 @@ subroutine gpu_kick_drift_sink(sim, ilevel, action_part)
 
 end subroutine gpu_kick_drift_sink
 
-#ifdef CORE
 subroutine gpu_kick_drift_core(sim, ilevel, action_part)
   use nvtx
   use ramses_commons, only: ramses_t
@@ -4511,7 +4496,6 @@ subroutine gpu_kick_drift_core(sim, ilevel, action_part)
   endif
 
 end subroutine gpu_kick_drift_core
-#endif
 
 subroutine gpu_kick_drift_tree(sim, ilevel, action_part)
   use nvtx

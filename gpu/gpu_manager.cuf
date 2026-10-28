@@ -91,7 +91,6 @@ recursive subroutine r_set_grid_device(pst)
         call nvtxEndRange()
      endif
 
-#ifdef CORE
      ! Core particle H→D
      if (pst%s%r%core .and. allocated(pst%s%core%xp) .and. allocated(core_xp)) then
         call nvtxStartRange("Copy core from host to device", color=5)!red
@@ -110,7 +109,6 @@ recursive subroutine r_set_grid_device(pst)
         call GPU_Error_Check(__FILE__, __LINE__)
         call nvtxEndRange()
      endif
-#endif
 
      ! Tree particle H→D
      if (pst%s%r%tree .and. allocated(pst%s%tree%xp) .and. allocated(tree_xp)) then
@@ -254,7 +252,6 @@ subroutine gpu_to_host_part(pst)
      call nvtxEndRange()
   endif
 
-#ifdef CORE
   if (allocated(core_xp)) then
      call nvtxStartRange("Copy core from device to host", color=5)!red
      pst%s%core%xp     = core_xp
@@ -272,7 +269,6 @@ subroutine gpu_to_host_part(pst)
      call GPU_Error_Check(__FILE__, __LINE__)
      call nvtxEndRange()
   endif
-#endif
 
   if (allocated(tree_xp)) then
      call nvtxStartRange("Copy tree from device to host", color=5)!red
@@ -757,7 +753,6 @@ end subroutine gpu_allocate_sink
 !###########################################################
 !###########################################################
 !###########################################################
-#ifdef CORE
 subroutine gpu_allocate_core(sim)
   use amr_parameters, ONLY: ndim
   implicit none
@@ -783,7 +778,6 @@ subroutine gpu_allocate_core(sim)
   call ensure_scan_capacity(scan_size, 1)
 
 end subroutine gpu_allocate_core
-#endif
 !###########################################################
 !###########################################################
 !###########################################################
