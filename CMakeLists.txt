@@ -853,6 +853,16 @@ if(CMAKE_Fortran_COMPILER_ID STREQUAL "NVHPC")
             list(APPEND _deps "${_gpu_obj_dir}/gpu_manager.cuf.o")
         endif()
 
+        file(STRINGS "${_full}" _use_clump REGEX "[Uu][Ss][Ee][ \t]+clump_device([ \t,;]|$)")
+        if(_use_clump)
+            list(APPEND _deps "${_gpu_obj_dir}/gpu_clump.cuf.o")
+        endif()
+
+        file(STRINGS "${_full}" _use_cooling REGEX "[Uu][Ss][Ee][ \t]+cooling_device([ \t,;]|$)")
+        if(_use_cooling)
+            list(APPEND _deps "${_gpu_obj_dir}/gpu_cooling.cuf.o")
+        endif()
+
         file(STRINGS "${_full}" _use_core REGEX "[Uu][Ss][Ee][ \t]+core_device([ \t,;]|$)")
         if(_use_core)
             list(APPEND _deps "${_gpu_obj_dir}/gpu_core.cuf.o")
