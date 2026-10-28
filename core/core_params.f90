@@ -34,7 +34,7 @@ module core_params_module
   logical::core_refine=.false.
   logical::output_core_clump=.false. ! Write core_clump.* catalogue
   logical::core_merge=.false. ! Merge cores with overlapping accretion zones
-  integer::core_merger_search_order=4 ! Core merger search half-width in dx_min
+  integer::core_merger_search_order=4 ! Core merger search half-width in cells of the merger level
   real(kind=8)::core_merging_timescale=1000d0 ! Core merger age gate in yr
   integer::core_accretion_type = 2 ! 0: None, 2: flux accretion
   real(kind=8)::core_accretion_boost = 1.0d0 ! Boost for core accretion
