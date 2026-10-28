@@ -399,6 +399,20 @@ contains
           dMBH_overdt = 4.0d0 * pi * rho_inf * r2_sink * v_bondi * lambda_sonic
           if(r%verbose_sink)write(*,*)'Bondi: ',dMBH_overdt
 
+       ! Compute threshold accretion rate
+       else if(r%accretion_type==3)then
+          ! Accrete in one time step all the gas above the effective peak density for sink formation
+          dMBH_overdt = (rho_gas - r%sink_relevance_threshold*r%sink_density_threshold)*vol_pt*dble(nSKnei) &
+               & / dt_loc
+          dMBH_overdt = max(dMBH_overdt, 0.0d0)
+          if(r%verbose_sink)write(*,*)'Density: ',dMBH_overdt
+       end if
+
+       !-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
+       ! Limit overall accretion rate
+       !-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
+       if(r%accretion_type>0)then
+
           ! Eddington accretion rate, which introduces an optional cap
           dMED_overdt = 4.0d0 * pi * factG_in_cgs * p%mp(ipart) * mH / (0.1d0 * sigma_T * c_cgs) * scale_t
           if(r%eddington_cap>0)dMBH_overdt = min(dMBH_overdt, dMED_overdt*r%eddington_cap)

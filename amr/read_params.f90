@@ -1360,10 +1360,10 @@ subroutine m_read_params(pst)
      nml_ok=.false.
   endif
 
-  ! The 56-point sink evolution only provides Bondi accretion
+  ! The 56-point sink evolution only provides Bondi and threshold accretion
   if(sink.and.sink_mechanical)then
-     if(accretion_type==2.or.accretion_type==3)then
-        write(*,*)'Error: sink_mechanical=.true. needs accretion_type = 0 or 1 (Bondi)'
+     if(accretion_type==2)then
+        write(*,*)'Error: sink_mechanical=.true. needs accretion_type = 0, 1 (Bondi) or 3 (threshold)'
         write(*,*)'Currently accretion_type=',accretion_type
         nml_ok=.false.
      endif

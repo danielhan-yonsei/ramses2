@@ -47,7 +47,7 @@ The three namelist blocks `&SINK_PARAMS`, `&SINK_ACCRETION_PARAMS` and `&SINK_FE
 | `sink_fix_mass`         | `logical`    | `.false.`     | Freeze the sink mass (still remove accreted mass from the gas).                                                |
 | `static_sink`           | `logical`    | `.false.`     | Freeze the sink position (velocity and momentum are still updated).                                            |
 | `t_start_black_hole`    | `real`       | -1            | Delay time (code units, since sink birth) before accretion/feedback fully turn on. Ramp-up is exponential.     |
-| `sink_mechanical`       | `logical`    | `.false.`     | Use the 56-point multi-level stencil (as in mechanical SN feedback) for accretion, drag and AGN feedback, so `sink_refine` is not needed. Supports `accretion_type` 0 or 1 only; ignores `sink_b_spline_order`, `agn_feedback_radius` and `agn_jet_opening_angle` (fixed 60° jet half-angle). |
+| `sink_mechanical`       | `logical`    | `.false.`     | Use the 56-point multi-level stencil (as in mechanical SN feedback) for accretion, drag and AGN feedback, so `sink_refine` is not needed. Supports `accretion_type` 0, 1 or 3 only; ignores `sink_b_spline_order`, `agn_feedback_radius` and `agn_jet_opening_angle` (fixed 60° jet half-angle). |
 
 ## `&SINK_FEEDBACK_PARAMS`: AGN feedback
 
