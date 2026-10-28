@@ -11,7 +11,7 @@ recursive subroutine r_init_part(pst)
   use mdl_parameters
 #ifdef _CUDA
   use gpu_manager
-  use core_formation_module, only: gpu_allocate_phew
+  use phew_device, only: gpu_allocate_phew
 #elif defined(_METAL)
   use metal_runner
 #endif

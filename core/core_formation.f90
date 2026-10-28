@@ -1,7 +1,7 @@
 module core_formation_module
   use amr_parameters, only: ndim
 #ifdef _CUDA
-  use phew_device, only: gpu_allocate_phew, gpu_core_clump, gpu_core_formation
+  use phew_device, only: gpu_core_clump, gpu_core_formation
 #endif
 
   integer,parameter::CORE_CLUMP_FIND=1

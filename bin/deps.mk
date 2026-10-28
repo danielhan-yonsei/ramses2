@@ -59,7 +59,7 @@ init_cr.o: amr_commons.o mdl.o mdl_commons.o ramses_commons.o
 init_flow_fine.o: amr_parameters.o input_hydro_condinit.o input_hydro_gadget.o input_hydro_grafic.o ramses_commons.o
 init_hydro.o: amr_commons.o mdl.o mdl_commons.o ramses_commons.o
 init_neq_chem.o: amr_commons.o coolrates_module.o
-init_part.o: amr_commons.o amr_parameters.o core_formation.o mdl.o mdl_commons.o pm_commons.o pm_parameters.o ramses_commons.o
+init_part.o: amr_commons.o amr_parameters.o mdl.o mdl_commons.o pm_commons.o pm_parameters.o ramses_commons.o
 init_refine_adaptive.o: cr_upload.o flag_utils.o init_part.o input_hydro_grafic.o input_part.o input_part_zoom.o ramses_commons.o refine_utils.o rt_upload.o upload.o
 init_refine_basegrid.o: amr_parameters.o flag_utils.o hash.o hilbert.o input_hydro_grafic.o mdl.o mdl_commons.o ramses_commons.o
 init_refine_ramses.o: amr_parameters.o hash.o hilbert.o hydro_parameters.o init_refine_basegrid.o input_hydro_condinit.o load_balance.o mdl.o mdl_commons.o output_amr.o ramses_commons.o read_params.o
@@ -221,7 +221,7 @@ gpu_star.o: amr_parameters.o gpu_utils.o hydro_parameters.o oct_commons.o
 gpu_turb.o: amr_parameters.o hydro_parameters.o oct_commons.o turb_commons.o
 gpu_utils.o: amr_parameters.o oct_commons.o
 init_amr.o: gpu_clump.o gpu_manager.o
-init_part.o: gpu_manager.o
+init_part.o: gpu_manager.o gpu_phew.o
 interpol_phi.o: gpu_runner.o
 move_fine.o: gpu_part.o
 multigrid_fine_coarse.o: gpu_runner.o
