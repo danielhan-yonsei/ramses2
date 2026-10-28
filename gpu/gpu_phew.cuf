@@ -176,8 +176,9 @@ contains
 
     itest = threadIdx%x + (blockIdx%x - 1) * blockDim%x
     if (itest > ntest) return
-    ! Positive densities sort as their bit patterns; the sign reverses the order
-    phew_key_in(itest) = -transfer(phew_dens0(itest), 0_8)
+    ! Positive densities sort as their bit patterns, read as an integer of the
+    ! size of dp and widened; the sign reverses the order
+    phew_key_in(itest) = -int(transfer(phew_dens0(itest), 0_dp), kind=8)
     phew_order_in(itest) = itest
   end subroutine phew_sort_key_kernel
 
@@ -1251,11 +1252,13 @@ contains
 
     ! 1. Flag the peaks that form a core
     call phew_select_kernel<<<(npeak + 255) / 256, 256>>>(npeak, &
-         & real(sim%r%core_relevance_threshold, kind=dp), density_threshold, sim%r%core_mass4_threshold, &
+         & real(sim%r%core_relevance_threshold, kind=dp), real(density_threshold, kind=dp), &
+         & real(sim%r%core_mass4_threshold, kind=dp), &
          & sim%r%core_use_LP_criteria, use_prop, sim%r%core_use_mass4_criteria, &
          & sim%r%core_use_energy_criteria, &
          & sim%r%core_use_contracting_criteria .or. sim%r%core_use_contracting_all_axes, &
-         & mseed, sim%r%boxlen, sim%r%smallr, sim%r%gamma, u_floor, factG, pi)
+         & real(mseed, kind=dp), real(sim%r%boxlen, kind=dp), real(sim%r%smallr, kind=dp), &
+         & real(sim%r%gamma, kind=dp), real(u_floor, kind=dp), real(factG, kind=dp), real(pi, kind=dp))
 
     ! 2. New core index of each flagged peak
     call gpu_scan(prefix_sum, 1, npeak, nnew_d)
@@ -1271,7 +1274,8 @@ contains
     ! 3. Create the cores
     dtnew_part_d = sim%g%dtnew
     call phew_formation_kernel<<<(nnew + 255) / 256, 256>>>(nnew, sim%core%npart, sim%core%npart_tot, &
-         & nstep_coarse, mseed, sim%g%texp, sim%r%boxlen, sim%r%smallr, u_floor, sim%r%metal, sim%r%imetal)
+         & nstep_coarse, real(mseed, kind=dp), real(sim%g%texp, kind=dp), real(sim%r%boxlen, kind=dp), &
+         & real(sim%r%smallr, kind=dp), real(u_floor, kind=dp), sim%r%metal, sim%r%imetal)
 
     ! 4. Update host-side metadata
     sim%core%npart = sim%core%npart + nnew
