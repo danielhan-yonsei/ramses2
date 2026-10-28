@@ -67,6 +67,12 @@ module cache_commons
      real(kind=8),dimension(1:twotondim)::realdp_phi_old
      real(kind=8),dimension(1:twotondim)::realdp_dis
   end type msg_three_realdp
+  type msg_four_realdp
+     real(kind=8),dimension(1:twotondim,1:3)::force
+#ifdef OUTPUT_PARTICLE_POTENTIAL
+     real(kind=8),dimension(1:twotondim)::phi
+#endif
+  end type msg_four_realdp
   type msg_nvar_realdp
      real(kind=8),dimension(1:twotondim,1:nvar)::realdp_hydro
   end type msg_nvar_realdp
