@@ -4,6 +4,11 @@ module sink_mechanical_module
 #ifdef _CUDA
   use sink_device, only: gpu_sink_mechanical
 #endif
+  type :: in_sink_mechanical_t
+     integer::ilevel
+     real(kind=8)::dt
+     real(kind=8)::texp_old
+  end type in_sink_mechanical_t
 contains
   !##############################################################################
   !##############################################################################
@@ -21,11 +26,20 @@ contains
     ! Note that it loops over all levels that are time-synchronized,
     ! as m_mechanical_feedback does.
     integer::i
+    type(in_sink_mechanical_t)::input_acc
     type(out_accretion_t)::output_acc
 
     macc=0d0
+    input_acc%dt=pst%s%g%dtnew(ilevel)
     do i=ilevel,pst%s%r%levelmin,-1
-       call r_sink_mechanical(pst,i,1,output_acc,2)
+       ! The time step of a coarser level is the sum of the sub-steps of the
+       ! finer level, as set at the end of amr_step (dtnew(i) is not yet updated)
+       if(i<ilevel)then
+          if(pst%s%r%nsubcycle(i)==2)input_acc%dt=pst%s%g%dtold(i+1)+input_acc%dt
+       endif
+       input_acc%ilevel=i
+       input_acc%texp_old=pst%s%g%texp_old(i)
+       call r_sink_mechanical(pst,input_acc,storage_size(input_acc)/32,output_acc,2)
        macc=macc+output_acc%mass
        if(i>pst%s%r%levelmin)then
           if(pst%s%r%nsubcycle(i-1)==2.and.pst%s%g%isubcycle(i)==1)exit
@@ -37,7 +51,7 @@ contains
   !##############################################################################
   !##############################################################################
   !##############################################################################
-  recursive subroutine r_sink_mechanical(pst,ilevel,input_size,output,output_size)
+  recursive subroutine r_sink_mechanical(pst,input,input_size,output,output_size)
     use mdl_module
     use ramses_commons, only: pst_t
     use mdl_parameters
@@ -45,21 +59,21 @@ contains
     type(pst_t)::pst
     integer,VALUE::input_size
     integer::output_size
+    type(in_sink_mechanical_t)::input
     type(out_accretion_t)::output,next_output
 
-    integer::ilevel
     integer::rID
 
     if(pst%nLower>0)then
-       rID = mdl_send_request(pst%s%mdl,MDL_SINK_MECHANICAL,pst%iUpper+1,input_size,output_size,ilevel)
-       call r_sink_mechanical(pst%pLower,ilevel,input_size,output,output_size)
+       rID = mdl_send_request(pst%s%mdl,MDL_SINK_MECHANICAL,pst%iUpper+1,input_size,output_size,input)
+       call r_sink_mechanical(pst%pLower,input,input_size,output,output_size)
        call mdl_get_reply(pst%s%mdl,rID,output_size,next_output)
        output%mass=output%mass+next_output%mass
     else
 #ifdef _CUDA
-       call gpu_sink_mechanical(pst%s,ilevel,output%mass)
+       call gpu_sink_mechanical(pst%s,input%ilevel,input%dt,output%mass)
 #else
-       call sink_mechanical(pst%s,pst%s%sink,ilevel,output%mass)
+       call sink_mechanical(pst%s,pst%s%sink,input%ilevel,input%dt,input%texp_old,output%mass)
 #endif
     endif
 
@@ -68,7 +82,7 @@ contains
   !##############################################################################
   !##############################################################################
   !##############################################################################
-  subroutine sink_mechanical(s,p,ilevel,macc_loc)
+  subroutine sink_mechanical(s,p,ilevel,dt_loc,texp_old,macc_loc)
     use constants
     use amr_parameters, only: ndim, twotondim
     use hydro_parameters, only: nvar, nener
@@ -86,7 +100,7 @@ contains
     type(ramses_t)::s
     type(part_t)::p
     integer::ilevel
-    real(kind=8)::macc_loc
+    real(kind=8)::dt_loc,texp_old,macc_loc
     !==================================================================
     ! This is the RAMSES routine for sink evolution using the 56-point
     ! stencil of the mechanical supernova feedback. Gas properties are
@@ -111,13 +125,13 @@ contains
     real(kind=8)::x,y,z,rr
     integer,dimension(1:ndim)::ckey,ckey_nbor
     integer(kind=8),dimension(0:ndim)::hash_cell,hash_nbor
-    integer::i,j,k,ind,ipart,idim,ivar,istep,igrid,icell,igridn,icelln,ilev_cell
+    integer::i,j,k,ind,ipart,idim,ivar,istep,istep_old,igrid,icell,igridn,icelln,ilev_cell
     real(kind=8),dimension(1:3)::xcen,xnei,xsink,x_rel,vv,v_rel,jet_direction,p_jet
     real(kind=8)::d,e,ethermal,cs,dm,dvol
     real(kind=8)::rho_gas,cs_gas,m_gas,rho_av_all,rho_inf
     real(kind=8),dimension(1:ndim)::vel_gas
     real(kind=8)::velocity,v_bondi,bondi_mass,r2_sink
-    real(kind=8)::dMBH_overdt,dMED_overdt,dt_loc
+    real(kind=8)::dMBH_overdt,dMED_overdt
     real(kind=8)::m_acc
     real(kind=8),dimension(1:3)::x_acc,p_acc,l_acc
     real(kind=8)::acc_ratio,energy_agn,fbk_ener_agn,fbk_mom_agn
@@ -125,7 +139,7 @@ contains
     real(kind=8)::v_jet,eta,m_jet,m_bh,wfrac
     real(kind=8),dimension(1:3)::vp_old,jp_new
     real(kind=8),dimension(1:nvar)::q_acc,q_jet
-    logical::quasar_mode,ok_level,ok_leaf,output_file
+    logical::quasar_mode,ok_level,ok_leaf,ok_face,output_file
     type(msg_large_realdp)::dummy_large_realdp
 #if NENER>0
     integer::irad
@@ -195,23 +209,21 @@ contains
     dx_loc=r%boxlen/2**ilevel
     vol_loc=dx_loc**ndim
 
-    ! Time step of the sinks in that level
-    dt_loc=g%dtnew(ilevel)
-
     !-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
     ! Check if high frequency dump
     !-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
+    ! Dump the sinks of this level if a multiple of sink_delta_tout falls
+    ! within the time step of this level, as for supernova events, so that
+    ! each sink is dumped once whatever its level
     output_file = .false.
     if(r%sink_delta_tout>0)then
        unit_yr = 3600*24*365.25
        ! proper time in Myr (careful in cosmology it is negative)
        current_time = g%texp * scale_t / g%aexp**2 / unit_yr / 1e6
-       istep = int(current_time / r%sink_delta_tout)
-       if (.not. p%init_counter) then
-          p%step_counter = istep - 1
-          p%init_counter = .true.
-       endif
-       if(istep > p%step_counter)then
+       istep = floor(current_time / r%sink_delta_tout)
+       current_time = texp_old * scale_t / g%aexp**2 / unit_yr / 1e6
+       istep_old = floor(current_time / r%sink_delta_tout)
+       if(istep > istep_old)then
           p%step_counter = istep
           output_file = .true.
        endif
@@ -265,6 +277,16 @@ contains
           if(igrid==0)ok_level=.false.
 
        end if
+
+       ! No accretion or feedback from a host cell touching a non-periodic face
+       ok_face=.true.
+       do idim=1,ndim
+          if(.not.r%periodic(idim))then
+             if(ckey(idim)==m%box_ckey_min(idim,hash_cell(0)))ok_face=.false.
+             if(ckey(idim)==m%box_ckey_max(idim,hash_cell(0))-1)ok_face=.false.
+          endif
+       end do
+       if(.not.ok_face)cycle
 
        if(.not. ok_level)then
           write(*,*)"Something went wrong in sink_mechanical"
@@ -567,7 +589,7 @@ contains
        ! Dynamics
        !-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
        if(r%drag_sink)then
-          call dynamical_friction(s,p,ilevel,ipart,rho_av_all,cs_gas,vel_gas,factG)
+          call dynamical_friction(s,p,dt_loc,ipart,rho_av_all,cs_gas,vel_gas,factG)
        endif
 
        !-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
@@ -575,13 +597,16 @@ contains
        !-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
        if(r%agn.and.dMBH_overdt>0.0d0)then
 
-          ! Quasar mode energy
-          energy_agn = r%epsilon_rad * dMBH_overdt * (c_cgs/scale_v)**2 * dt_loc
-          fbk_ener_agn = r%epsilon_quasar * energy_agn
-
-          ! Radio mode momentum of the jet mass moving at agn_jet_vmax
-          ! (momentum_boost is not used)
-          fbk_mom_agn  = v_jet * m_jet
+          if(quasar_mode)then
+             ! Quasar mode energy
+             energy_agn = r%epsilon_rad * dMBH_overdt * (c_cgs/scale_v)**2 * dt_loc
+             fbk_ener_agn = r%epsilon_quasar * energy_agn
+          else
+             ! Radio mode momentum and kinetic energy of the jet mass moving
+             ! at agn_jet_vmax (momentum_boost is not used)
+             fbk_mom_agn  = v_jet * m_jet
+             fbk_ener_agn = 0.5d0 * m_jet * v_jet**2
+          endif
 
           ! Compute the weights of the sample points
           w_nbor=0d0; mu_nbor=0d0
@@ -660,11 +685,11 @@ contains
        !-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
        if(output_file .and. p%idp(ipart) < 100000)then
           if(r%agn)then
-             call dump_sink_data_fine_AGN(s,p,ipart,ilevel,scale_l,scale_t,scale_d, &
+             call dump_sink_data_fine_AGN(s,p,ipart,dt_loc,scale_l,scale_t,scale_d, &
                   &                       dMBH_overdt,dMED_overdt,rho_inf,cs_gas, &
                   &                       fbk_mom_agn,fbk_ener_agn)
           else
-             call dump_sink_data_fine(s,p,ipart,ilevel,scale_l,scale_t,scale_d, &
+             call dump_sink_data_fine(s,p,ipart,dt_loc,scale_l,scale_t,scale_d, &
                   &                   dMBH_overdt,dMED_overdt,rho_inf,cs_gas)
           end if
        end if

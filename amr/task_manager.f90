@@ -287,7 +287,7 @@ function worker_init(mdl) result(pst)
   call mdl_add_service(pst%s%mdl,MDL_THERMAL_FEEDBACK,       pst,C_FUNLOC(r_thermal_feedback),4,2,"thermal_feedback")
   call mdl_add_service(pst%s%mdl,MDL_MECHANICAL_FEEDBACK,    pst,C_FUNLOC(r_mechanical_feedback),4,2,"mechanical_feedback")
   call mdl_add_service(pst%s%mdl,MDL_SINK_EVOLUTION,         pst,C_FUNLOC(r_sink_evolution),1,2,"sink_evolution")
-  call mdl_add_service(pst%s%mdl,MDL_SINK_MECHANICAL,        pst,C_FUNLOC(r_sink_mechanical),1,2,"sink_mechanical")
+  call mdl_add_service(pst%s%mdl,MDL_SINK_MECHANICAL,        pst,C_FUNLOC(r_sink_mechanical),6,2,"sink_mechanical")
   call mdl_add_service(pst%s%mdl,MDL_CORE_EVOLUTION, pst,C_FUNLOC(r_core_evolution), &
        storage_size(dummy_core_acc_in)/32,storage_size(dummy_core_acc_out)/32,"core_evolution")
   call mdl_add_service(pst%s%mdl,MDL_CORE_RETIREMENT, &

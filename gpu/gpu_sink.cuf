@@ -1647,7 +1647,7 @@ contains
   ! Host Driver: 56-point sink accretion, friction, AGN feedback and periodic
   ! wrap for all sinks of level ilevel. Mirrors sink_mechanical in sink_mechanical.f90.
   ! =========================================================================
-  subroutine gpu_sink_mechanical(sim, ilevel, macc_loc)
+  subroutine gpu_sink_mechanical(sim, ilevel, dt_loc, macc_loc)
     use nvtx
     use constants, only: pi, twopi, factG_in_cgs, mH, sigma_T, c_cgs
     use ramses_commons, only: ramses_t
@@ -1655,6 +1655,7 @@ contains
     implicit none
     type(ramses_t) :: sim
     integer, intent(in) :: ilevel
+    real(kind=8), intent(in) :: dt_loc
     real(kind=8), intent(out) :: macc_loc
 
     real(kind=8) :: scale_nH, scale_T2, scale_l, scale_d, scale_t, scale_v
@@ -1712,7 +1713,7 @@ contains
          & box_ckey_min, box_ckey_max, periodic, &
          & head_idx, ilevel, r%accretion_type, &
          & real(m%skip(1),kind=dp), real(m%skip(2),kind=dp), real(m%skip(3),kind=dp), &
-         & real(dx_loc,kind=dp), real(g%dtnew(ilevel),kind=dp), real(g%texp,kind=dp), &
+         & real(dx_loc,kind=dp), real(dt_loc,kind=dp), real(g%texp,kind=dp), &
          & real(factG,kind=dp), real(lambda_sonic,kind=dp), real(edd_fac,kind=dp), &
          & real(r%eddington_cap,kind=dp), real(r%eddington_floor,kind=dp), &
          & real(r%t_start_black_hole,kind=dp), real(r%manual_accretion_rate,kind=dp), &

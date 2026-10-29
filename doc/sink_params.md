@@ -67,4 +67,5 @@ The three namelist blocks `&SINK_PARAMS`, `&SINK_ACCRETION_PARAMS` and `&SINK_FE
 
 With `sink_mechanical=.true.`, feedback is spread over the 56-point stencil
 around the host cell, the radio-mode cone has a fixed 60° half-angle, and
-`momentum_boost` is ignored (the radio-mode momentum is `epsilon_radio*L/c`).
+`momentum_boost` is ignored: the radio-mode momentum is that of the jet mass
+moving at `agn_jet_vmax`, i.e. `(2*epsilon_radio*c/agn_jet_vmax)*L/c`.

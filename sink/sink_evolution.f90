@@ -206,7 +206,7 @@ contains
        ! Dynamics
        !-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
        if(r%drag_sink)then
-          call dynamical_friction(s,p,ilevel,ipart,rho_av_all,cs_gas,vel_gas,factG)
+          call dynamical_friction(s,p,g%dtnew(ilevel),ipart,rho_av_all,cs_gas,vel_gas,factG)
        endif
 
        !-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
@@ -232,11 +232,11 @@ contains
        !-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
         if(output_file .and. p%idp(ipart) < 100000)then
           if(r%agn)then
-             call dump_sink_data_fine_AGN(s,p,ipart,ilevel,scale_l,scale_t,scale_d, &
+             call dump_sink_data_fine_AGN(s,p,ipart,g%dtnew(ilevel),scale_l,scale_t,scale_d, &
                   &                       dMBH_overdt,dMED_overdt,rho_inf,cs_gas, &
                   &                       fbk_mom_agn,fbk_ener_agn)
           else
-             call dump_sink_data_fine(s,p,ipart,ilevel,scale_l,scale_t,scale_d, &
+             call dump_sink_data_fine(s,p,ipart,g%dtnew(ilevel),scale_l,scale_t,scale_d, &
                   &                   dMBH_overdt,dMED_overdt,rho_inf,cs_gas)
           end if
        end if
@@ -959,7 +959,7 @@ contains
   !##############################################################################
   !##############################################################################
   !##############################################################################
-  subroutine dynamical_friction(s,p,ilevel,ipart,rho_av_all,cs_gas,vel_gas,factG)
+  subroutine dynamical_friction(s,p,dt,ipart,rho_av_all,cs_gas,vel_gas,factG)
     use constants
     use amr_parameters, only: ndim, twotondim
     use hydro_parameters, only: nvar
@@ -969,8 +969,8 @@ contains
     implicit none
     type(ramses_t)::s
     type(part_t)::p
-    integer::ipart,ilevel
-    real(kind=8)::rho_av_all,cs_gas,factG
+    integer::ipart
+    real(kind=8)::dt,rho_av_all,cs_gas,factG
     real(kind=8),dimension(1:ndim)::vel_gas
     !==================================================================
     ! This is the RAMSES routine for dynamical friction, with the goal
@@ -1018,7 +1018,7 @@ contains
     drag_accel = I * 4.0d0*pi *factG**2 * p%mp(ipart) * rho_av_all / v_rel_mag**2
 
     ! Limit the kick so drag can at most cancel the relative velocity
-    dv_drag = min(drag_accel * s%g%dtnew(ilevel), v_rel_mag)
+    dv_drag = min(drag_accel * dt, v_rel_mag)
 
     ! Update the velocity of the sink towards the local gas velocity
     p%vp(ipart,1:ndim) = p%vp(ipart,1:ndim) + dv_drag * v_rel_direction(1:ndim)
@@ -1245,7 +1245,7 @@ contains
   !##############################################################################
   !##############################################################################
   !##############################################################################
-  subroutine dump_sink_data_fine(s,p,ipart,ilevel,scale_l,scale_t,scale_d, &
+  subroutine dump_sink_data_fine(s,p,ipart,dt,scale_l,scale_t,scale_d, &
        &                         dMBH_overdt,dMED_overdt,rho_inf,cs_gas)
     use amr_parameters, only: ndim
     use ramses_commons, only: ramses_t
@@ -1254,9 +1254,9 @@ contains
     implicit none
     type(ramses_t)::s
     type(part_t)::p
-    integer::ilevel,ipart
+    integer::ipart
     real(kind=8)::dMBH_overdt,dMED_overdt,rho_inf,cs_gas
-    real(kind=8)::scale_l,scale_t,scale_d
+    real(kind=8)::dt,scale_l,scale_t,scale_d
     !==================================================================
     ! Simple routine to dump sink data to a CSV on every fine time step
     ! Nicholas Choustikov
@@ -1305,7 +1305,7 @@ contains
 
     ! Write data to the sink file
     write(unit,'(I10,21(A1,ES21.10),A1,I10)')p%step_counter,',',g%texp*scale_t/g%aexp**2/unit_yr, &
-         & ',',g%dtnew(ilevel)*scale_t/unit_yr,',',p%mp(ipart)*scale_m/unit_msun,&
+         & ',',dt*scale_t/unit_yr,',',p%mp(ipart)*scale_m/unit_msun,&
          & ',',dMBH_overdt*unit_dotM,',',dMED_overdt*unit_dotM,&
          & ',',rho_inf*scale_d,',',cs_gas*scale_v,&
          & ',',p%xp(ipart,1),',',p%xp(ipart,2),',',p%xp(ipart,3),&
@@ -1321,7 +1321,7 @@ contains
   !##############################################################################
   !##############################################################################
   !##############################################################################
-  subroutine dump_sink_data_fine_AGN(s,p,ipart,ilevel,scale_l,scale_t,scale_d, &
+  subroutine dump_sink_data_fine_AGN(s,p,ipart,dt,scale_l,scale_t,scale_d, &
        &                             dMBH_overdt,dMED_overdt,rho_inf,cs_gas, &
        &                             fbk_mom_agn,fbk_ener_agn)
     use amr_parameters, only: ndim
@@ -1331,10 +1331,10 @@ contains
     implicit none
     type(ramses_t)::s
     type(part_t)::p
-    integer::ilevel,ipart
+    integer::ipart
     real(kind=8)::dMBH_overdt,dMED_overdt,rho_inf,cs_gas
     real(kind=8)::fbk_mom_agn,fbk_ener_agn
-    real(kind=8)::scale_l,scale_t,scale_d
+    real(kind=8)::dt,scale_l,scale_t,scale_d
     !==================================================================
     ! Simple routine to dump sink data to a CSV on every fine time step
     ! Nicholas Choustikov
@@ -1384,7 +1384,7 @@ contains
 
     ! Write data to the sink file
     write(unit,'(I10,21(A1,ES21.10),A1,I10)')p%step_counter,',',g%texp*scale_t/g%aexp**2/unit_yr,&
-         & ',',g%dtnew(ilevel)*scale_t/unit_yr,',',p%mp(ipart)*scale_m/unit_msun,&
+         & ',',dt*scale_t/unit_yr,',',p%mp(ipart)*scale_m/unit_msun,&
          & ',',dMBH_overdt*unit_dotM,',',dMED_overdt*unit_dotM,&
          & ',',rho_inf*scale_d,',',cs_gas*scale_v,&
          & ',',p%xp(ipart,1),',',p%xp(ipart,2),',',p%xp(ipart,3),&
