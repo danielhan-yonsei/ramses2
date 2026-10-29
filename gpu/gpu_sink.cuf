@@ -730,7 +730,7 @@ contains
        & bondi_use_vrel, bondi_use_gas_mass, use_rho_inf, &
        & mass_weighting, momentum_conserving, sink_fix_mass, static, drag_sink, &
        & agn, agn_use_mass_weighting, agn_fbk_mode_switch_threshold, &
-       & epsilon_rad, epsilon_quasar, epsilon_radio, momentum_boost, c_code, &
+       & epsilon_rad, epsilon_quasar, epsilon_radio, c_code, v_jet, &
        & bs1, bs2, bs3, macc_loc_d)
     implicit none
     integer(kind=8), device :: hash_key_d(*)
@@ -753,7 +753,7 @@ contains
     logical, intent(in), value :: drag_sink
     logical, intent(in), value :: agn, agn_use_mass_weighting
     real(kind=dp), intent(in), value :: agn_fbk_mode_switch_threshold
-    real(kind=dp), intent(in), value :: epsilon_rad, epsilon_quasar, epsilon_radio, momentum_boost, c_code
+    real(kind=dp), intent(in), value :: epsilon_rad, epsilon_quasar, epsilon_radio, c_code, v_jet
     real(kind=dp), intent(in), value :: bs1, bs2, bs3
     real(kind=dp), device :: macc_loc_d
 
@@ -765,6 +765,7 @@ contains
     real(kind=dp), shared :: s_dMBH, s_rho_gas
     logical, shared :: s_do_agn, s_quasar
     real(kind=dp), shared :: s_jet(3), s_fbk_ener, s_fbk_mom, s_w_tot, s_w_plus, s_w_minus
+    real(kind=dp), shared :: s_m_jet, s_vs(3), s_q_jet(nvar)
     integer :: ipart, j, idim, igrid, icell, igridn, icelln, info, cell_level, level_nbor
 #if NVAR>5+NENER
     integer :: ivar
@@ -784,6 +785,7 @@ contains
     real(kind=dp) :: m_acc, x_acc(3), p_acc(3), l_acc(3)
     real(kind=dp) :: mach, mach_c, fI, v_rel_mag, drag_accel, dv_drag
     real(kind=dp) :: acc_ratio, jnorm, energy_agn, cos_jet, mu, w, w_tot, w_plus, w_minus, de
+    real(kind=dp) :: eta, m_jet, m_bh, wfrac, q, jp_new(3)
 #ifdef MHD
     real(kind=dp) :: bx, by, bz
 #endif
@@ -1001,6 +1003,7 @@ contains
 
        s_dMBH = dMBH
        s_rho_gas = rho_gas
+       s_do_agn = .false.
     endif
     call syncthreads()
 
@@ -1052,10 +1055,48 @@ contains
     l_acc(1) = block_reduce_dp_sum(l_acc(1))
     l_acc(2) = block_reduce_dp_sum(l_acc(2))
     l_acc(3) = block_reduce_dp_sum(l_acc(3))
+#if NVAR>5+NENER
+    ! Accreted passive scalars
+    do ivar = 6 + nener, nvar
+       q = 0.0_dp
+       if (found) q = dm * uold(icelln, ivar, igridn) / d
+       q = block_reduce_dp_sum(q)
+       if (j == 0) s_q_jet(ivar) = q
+    end do
+#endif
 
-    ! Add accreted quantities to the sink
+    ! AGN mode and jet mass loading, then add accreted quantities to the sink
     if (j == 0) then
-       mtot = mp + m_acc
+       eta = 0.0_dp
+       if (agn) then
+          s_do_agn = .true.
+          acc_ratio = 0.0_dp
+          if (dMED > 0.0_dp) acc_ratio = dMBH / dMED
+          ! Direction of the sink angular momentum after accretion
+          jp_new(1:3) = mp * sink_jp(ipart, 1:3) + l_acc(1:3)
+          jnorm = sqrt(jp_new(1)**2 + jp_new(2)**2 + jp_new(3)**2)
+          s_quasar = (acc_ratio > agn_fbk_mode_switch_threshold) .or. (jnorm <= 0.0_dp)
+          s_jet(1:3) = jp_new(1:3) / (jnorm + tiny(1.0_dp))
+          ! Radio mode: put back into the jet the fraction eta/(1+eta) of the
+          ! accreted mass, so that the jet kinetic energy at agn_jet_vmax is
+          ! epsilon_radio times the luminosity of the mass reaching the black hole
+          if (.not. s_quasar) then
+             eta = 2.0_dp * epsilon_radio * epsilon_rad * (c_code / v_jet)**2
+          endif
+       endif
+       m_jet = eta / (1.0_dp + eta) * m_acc
+#if NVAR>5+NENER
+       do ivar = 6 + nener, nvar
+          s_q_jet(ivar) = eta / (1.0_dp + eta) * s_q_jet(ivar)
+       end do
+#endif
+       s_m_jet = m_jet
+       ! The jet mass is ejected with the sink velocity before accretion
+       s_vs(1:3) = vp(1:3)
+
+       ! Mass reaching the black hole
+       m_bh = m_acc - m_jet
+       mtot = mp + m_bh
        if (.not. static) then
           sink_xp(ipart, 1) = sink_xp(ipart, 1) + x_acc(1) / mtot
           sink_xp(ipart, 2) = sink_xp(ipart, 2) + x_acc(2) / mtot
@@ -1068,7 +1109,7 @@ contains
        sink_jp(ipart, 2) = (mp * sink_jp(ipart, 2) + l_acc(2)) / mtot
        sink_jp(ipart, 3) = (mp * sink_jp(ipart, 3) + l_acc(3)) / mtot
        if (.not. sink_fix_mass) sink_mp(ipart) = mtot
-       info = atomicadd(macc_loc_d, m_acc)
+       info = atomicadd(macc_loc_d, m_bh)
     endif
 
     endif ! s_dMBH > 0
@@ -1111,21 +1152,15 @@ contains
     ! [C] AGN feedback, mirrors the feedback part of sink_mechanical
     !===========================================
     if (agn) then
-       ! Thread 0 holds the accretion rates; nothing to inject without a positive rate
+       ! Thread 0 holds the accretion rates; mode and jet were set with the sink update
        if (j == 0) then
-          s_do_agn = (dMBH > 0.0_dp)
           if (s_do_agn) then
-             acc_ratio = 0.0_dp
-             if (dMED > 0.0_dp) acc_ratio = dMBH / dMED
-             jnorm = sqrt(sink_jp(ipart, 1)**2 + sink_jp(ipart, 2)**2 + sink_jp(ipart, 3)**2)
-             s_quasar = (acc_ratio > agn_fbk_mode_switch_threshold) .or. (jnorm <= 0.0_dp)
-             s_jet(1) = sink_jp(ipart, 1) / (jnorm + tiny(1.0_dp))
-             s_jet(2) = sink_jp(ipart, 2) / (jnorm + tiny(1.0_dp))
-             s_jet(3) = sink_jp(ipart, 3) / (jnorm + tiny(1.0_dp))
-             ! Quasar mode energy and radio mode momentum
+             ! Quasar mode energy
              energy_agn = epsilon_rad * dMBH * c_code**2 * dtnew
              s_fbk_ener = epsilon_quasar * energy_agn
-             s_fbk_mom  = epsilon_radio * momentum_boost * energy_agn / c_code
+             ! Radio mode momentum of the jet mass moving at agn_jet_vmax
+             ! (momentum_boost is not used)
+             s_fbk_mom  = v_jet * s_m_jet
           endif
        endif
        call syncthreads()
@@ -1163,19 +1198,29 @@ contains
                 ! Quasar mode (energy)
                 info = atomicadd(unew(icelln, 5, igridn), s_fbk_ener * w / s_w_tot / vol_nei)
              else
-                ! Radio mode (momentum and associated kinetic energy),
-                ! half of the momentum in each hemisphere
+                ! Radio mode (jet mass, momentum and associated kinetic energy),
+                ! half of the jet in each hemisphere
                 if (mu > 0.0_dp) then
-                   p_jet(1:3) = +0.5_dp * s_fbk_mom * w / s_w_plus  * s_jet(1:3)
+                   wfrac = +0.5_dp * w / s_w_plus
                 else
-                   p_jet(1:3) = -0.5_dp * s_fbk_mom * w / s_w_minus * s_jet(1:3)
+                   wfrac = -0.5_dp * w / s_w_minus
                 endif
-                de = p_jet(1) * vv(1) + p_jet(2) * vv(2) + p_jet(3) * vv(3) &
-                     & + (p_jet(1)**2 + p_jet(2)**2 + p_jet(3)**2) / (2.0_dp * d * vol_pt)
-                info = atomicadd(unew(icelln, 2, igridn), p_jet(1) / vol_nei)
-                info = atomicadd(unew(icelln, 3, igridn), p_jet(2) / vol_nei)
-                info = atomicadd(unew(icelln, 4, igridn), p_jet(3) / vol_nei)
+                p_jet(1:3) = wfrac * s_fbk_mom * s_jet(1:3)
+                wfrac = abs(wfrac)
+                ! Energy of the jet gas; the kinetic energy lost when it mixes
+                ! with the gas of the sample point appears as thermal energy
+                de = 0.5_dp * wfrac * s_m_jet * (s_vs(1)**2 + s_vs(2)**2 + s_vs(3)**2 + v_jet**2) &
+                     & + p_jet(1) * s_vs(1) + p_jet(2) * s_vs(2) + p_jet(3) * s_vs(3)
+                info = atomicadd(unew(icelln, 1, igridn), wfrac * s_m_jet / vol_nei)
+                info = atomicadd(unew(icelln, 2, igridn), (wfrac * s_m_jet * s_vs(1) + p_jet(1)) / vol_nei)
+                info = atomicadd(unew(icelln, 3, igridn), (wfrac * s_m_jet * s_vs(2) + p_jet(2)) / vol_nei)
+                info = atomicadd(unew(icelln, 4, igridn), (wfrac * s_m_jet * s_vs(3) + p_jet(3)) / vol_nei)
                 info = atomicadd(unew(icelln, 5, igridn), de / vol_nei)
+#if NVAR>5+NENER
+                do ivar = 6 + nener, nvar
+                   info = atomicadd(unew(icelln, ivar, igridn), wfrac * s_q_jet(ivar) / vol_nei)
+                end do
+#endif
              endif
           endif
        endif
@@ -1613,7 +1658,7 @@ contains
     real(kind=8), intent(out) :: macc_loc
 
     real(kind=8) :: scale_nH, scale_T2, scale_l, scale_d, scale_t, scale_v
-    real(kind=8) :: factG, lambda_sonic, edd_fac, dx_loc, c_code
+    real(kind=8) :: factG, lambda_sonic, edd_fac, dx_loc, c_code, v_jet
     real(kind=dp), device :: macc_loc_d
     real(kind=dp) :: macc_loc_dp
     integer :: head_idx, nsink_lev
@@ -1654,8 +1699,9 @@ contains
     ! Mesh spacing in that level
     dx_loc = r%boxlen/2**ilevel
 
-    ! Speed of light in code units
+    ! Speed of light and velocity of the mass-loaded jet in code units
     c_code = c_cgs/scale_v
+    v_jet = r%agn_jet_vmax*1d5/scale_v
 
     macc_loc_d = 0.0_dp
 
@@ -1679,7 +1725,7 @@ contains
          & r%agn, r%agn_use_mass_weighting, &
          & real(r%agn_fbk_mode_switch_threshold,kind=dp), real(r%epsilon_rad,kind=dp), &
          & real(r%epsilon_quasar,kind=dp), real(r%epsilon_radio,kind=dp), &
-         & real(r%momentum_boost,kind=dp), real(c_code,kind=dp), &
+         & real(c_code,kind=dp), real(v_jet,kind=dp), &
          & real(r%box_size(1),kind=dp), real(r%box_size(2),kind=dp), real(r%box_size(3),kind=dp), &
          & macc_loc_d)
     call GPU_Error_Check(__FILE__, __LINE__)

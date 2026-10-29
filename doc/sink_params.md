@@ -59,10 +59,12 @@ The three namelist blocks `&SINK_PARAMS`, `&SINK_ACCRETION_PARAMS` and `&SINK_FE
 | `agn_fbk_mode_switch_threshold` | `real`       | 0.01          | Eddington ratio below which the code switches from quasar (thermal) to radio (kinetic) mode.       |
 | `epsilon_rad`                   | `real`       | 0.1           | Radiative efficiency `L = epsilon_rad * dM/dt * c^2`.                                              |
 | `epsilon_quasar`                | `real`       | 0.15          | Coupling efficiency of the quasar-mode thermal energy injection.                                   |
-| `epsilon_radio`                 | `real`       | 1             | Coupling efficiency of the radio-mode momentum injection.                                          |
+| `epsilon_radio`                 | `real`       | 0.1           | Coupling efficiency of the radio-mode momentum injection. With `sink_mechanical=.true.`, fraction of the luminosity going into the jet kinetic energy. |
 | `momentum_boost`                | `real`       | 10            | Momentum boost of the radio-mode jet in units of `L/c`.                                            |
 | `agn_jet_opening_angle`         | `real`       | 60            | Full opening angle (degrees) of the radio-mode bipolar outflow cone.                               |
 | `agn_use_mass_weighting`        | `logical`    | `.false.`     | Weight the feedback injection by the local gas density.                                            |
+| `agn_jet_vmax`                  | `real`       | 1e4           | Jet velocity (km/s) of the mass-loaded radio mode (`sink_mechanical` only). A fraction eta/(1+eta) of the accreted mass, with eta = `2*epsilon_radio*epsilon_rad*(c/agn_jet_vmax)**2`, is put back into the jet, so that its kinetic energy is `epsilon_radio*L`, with L from the mass reaching the black hole. Must satisfy 0 < `agn_jet_vmax` <= c. |
 
 With `sink_mechanical=.true.`, feedback is spread over the 56-point stencil
-around the host cell, and the radio-mode cone has a fixed 60° half-angle.
+around the host cell, the radio-mode cone has a fixed 60° half-angle, and
+`momentum_boost` is ignored (the radio-mode momentum is `epsilon_radio*L/c`).

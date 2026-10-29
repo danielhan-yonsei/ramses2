@@ -122,6 +122,9 @@ contains
     real(kind=8),dimension(1:3)::x_acc,p_acc,l_acc
     real(kind=8)::acc_ratio,energy_agn,fbk_ener_agn,fbk_mom_agn
     real(kind=8)::w_tot,w_plus,w_minus,de
+    real(kind=8)::v_jet,eta,m_jet,m_bh,wfrac
+    real(kind=8),dimension(1:3)::vp_old,jp_new
+    real(kind=8),dimension(1:nvar)::q_acc,q_jet
     logical::quasar_mode,ok_level,ok_leaf,output_file
     type(msg_large_realdp)::dummy_large_realdp
 #if NENER>0
@@ -184,6 +187,9 @@ contains
 
     ! Cosine of the radio mode jet half opening angle
     cos_jet=cos(pi/180d0*agn_jet_half_angle)
+
+    ! Velocity of the mass-loaded radio mode jet in code units
+    v_jet=r%agn_jet_vmax*1d5/scale_v
 
     ! Mesh spacing in that level
     dx_loc=r%boxlen/2**ilevel
@@ -444,7 +450,7 @@ contains
        !-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
        ! Accrete from the sample points
        !-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
-       m_acc=0.0d0; x_acc=0.0d0; p_acc=0.0d0; l_acc=0.0d0
+       m_acc=0.0d0; x_acc=0.0d0; p_acc=0.0d0; l_acc=0.0d0; q_acc=0.0d0
        if(dMBH_overdt>0.0d0)then
           do j=1,nSKnei
 
@@ -488,6 +494,7 @@ contains
 #if NVAR>5+NENER
              do ivar = 6 + nener, nvar
                 m%unew(icelln,ivar,igridn) = m%unew(icelln,ivar,igridn) - dvol*m%uold(icelln,ivar,igridn)/d
+                q_acc(ivar) = q_acc(ivar) + dm*m%uold(icelln,ivar,igridn)/d
              end do
 #endif
              ! Accreted mass
@@ -511,14 +518,50 @@ contains
           end do
        end if
 
+       !-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
+       ! AGN mode and jet mass loading
+       !-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
+       m_jet=0.0d0; q_jet=0.0d0
+       if(r%agn.and.dMBH_overdt>0.0d0)then
+
+          ! Compute chi (fraction of Eddington)
+          acc_ratio = 0.0d0
+          if(dMED_overdt>0.0d0)acc_ratio = dMBH_overdt/dMED_overdt
+
+          ! Direction of the sink angular momentum after accretion
+          jp_new(1:ndim) = p%mp(ipart) * p%jp(ipart,1:ndim) + l_acc(1:ndim)
+
+          ! Check if quasar mode
+          quasar_mode = (acc_ratio.gt.r%agn_fbk_mode_switch_threshold) .or. (norm2(jp_new(1:ndim)) .le. 0.0d0)
+
+          ! Compute the jet direction
+          jet_direction(1:ndim) = jp_new(1:ndim) / (norm2(jp_new(1:ndim)) + tiny(0.0d0))
+
+          ! Radio mode: put back into the jet the fraction eta/(1+eta) of the
+          ! accreted mass, so that the jet kinetic energy at agn_jet_vmax is
+          ! epsilon_radio times the luminosity of the mass reaching the black hole
+          if(.not.quasar_mode)then
+             eta = 2.0d0 * r%epsilon_radio * r%epsilon_rad * ( (c_cgs/scale_v) / v_jet )**2
+             m_jet = eta / (1.0d0 + eta) * m_acc
+             q_jet = eta / (1.0d0 + eta) * q_acc
+          endif
+
+       end if
+
+       ! Mass reaching the black hole
+       m_bh = m_acc - m_jet
+
+       ! The jet mass is ejected with the sink velocity before accretion
+       vp_old(1:ndim) = p%vp(ipart,1:ndim)
+
        ! Add accreted properties to sink variables
-       if(.not.p%static)p%xp(ipart,1:ndim) = p%xp(ipart,1:ndim) + x_acc(1:ndim) / ( p%mp(ipart) + m_acc )
-       p%vp(ipart,1:ndim)                  = p%vp(ipart,1:ndim) + p_acc(1:ndim) / ( p%mp(ipart) + m_acc )
-       p%jp(ipart,1:ndim)                  = ( p%mp(ipart) * p%jp(ipart,1:ndim) + l_acc(1:ndim) ) / ( p%mp(ipart) + m_acc )
-       if(.not.r%sink_fix_mass)p%mp(ipart) = p%mp(ipart) + m_acc
+       if(.not.p%static)p%xp(ipart,1:ndim) = p%xp(ipart,1:ndim) + x_acc(1:ndim) / ( p%mp(ipart) + m_bh )
+       p%vp(ipart,1:ndim)                  = p%vp(ipart,1:ndim) + p_acc(1:ndim) / ( p%mp(ipart) + m_bh )
+       p%jp(ipart,1:ndim)                  = ( p%mp(ipart) * p%jp(ipart,1:ndim) + l_acc(1:ndim) ) / ( p%mp(ipart) + m_bh )
+       if(.not.r%sink_fix_mass)p%mp(ipart) = p%mp(ipart) + m_bh
 
        ! Save accreted mass to total
-       macc_loc = macc_loc + m_acc
+       macc_loc = macc_loc + m_bh
 
        !-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
        ! Dynamics
@@ -532,22 +575,13 @@ contains
        !-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
        if(r%agn.and.dMBH_overdt>0.0d0)then
 
-          ! Compute chi (fraction of Eddington)
-          acc_ratio = 0.0d0
-          if(dMED_overdt>0.0d0)acc_ratio = dMBH_overdt/dMED_overdt
-
-          ! Check if quasar mode
-          quasar_mode = (acc_ratio.gt.r%agn_fbk_mode_switch_threshold) .or. (norm2(p%jp(ipart,:)) .le. 0.0d0)
-
-          ! Compute the jet direction
-          jet_direction(1:ndim) = p%jp(ipart,1:ndim) / (norm2(p%jp(ipart,:)) + tiny(0.0d0))
-
           ! Quasar mode energy
           energy_agn = r%epsilon_rad * dMBH_overdt * (c_cgs/scale_v)**2 * dt_loc
           fbk_ener_agn = r%epsilon_quasar * energy_agn
 
-          ! Radio mode momentum
-          fbk_mom_agn  = r%epsilon_radio * r%momentum_boost * energy_agn / (c_cgs/scale_v)
+          ! Radio mode momentum of the jet mass moving at agn_jet_vmax
+          ! (momentum_boost is not used)
+          fbk_mom_agn  = v_jet * m_jet
 
           ! Compute the weights of the sample points
           w_nbor=0d0; mu_nbor=0d0
@@ -571,8 +605,8 @@ contains
                 m%unew(icelln,5,igridn) = m%unew(icelln,5,igridn) + fbk_ener_agn * w_nbor(j) / w_tot / vol_nbor(j)
              end do
           else
-             ! Radio mode (momentum and associated kinetic energy),
-             ! half of the momentum in each hemisphere
+             ! Radio mode (jet mass, momentum and associated kinetic energy),
+             ! half of the jet in each hemisphere
              w_plus  = sum(w_nbor, mask=mu_nbor>0d0)
              w_minus = sum(w_nbor, mask=mu_nbor<0d0)
              do j=1,nSKnei
@@ -580,13 +614,26 @@ contains
                 igridn = igrid_nbor(j)
                 icelln = icell_nbor(j)
                 if(mu_nbor(j)>0d0)then
-                   p_jet(1:ndim) = +0.5d0 * fbk_mom_agn * w_nbor(j) / w_plus  * jet_direction(1:ndim)
+                   wfrac = +0.5d0 * w_nbor(j) / w_plus
                 else
-                   p_jet(1:ndim) = -0.5d0 * fbk_mom_agn * w_nbor(j) / w_minus * jet_direction(1:ndim)
+                   wfrac = -0.5d0 * w_nbor(j) / w_minus
                 endif
-                de = dot_product(p_jet(1:ndim),v_nbor(1:ndim,j)) + sum(p_jet(1:ndim)**2)/(2d0*d_nbor(j)*vol_pt)
-                m%unew(icelln,2:4,igridn) = m%unew(icelln,2:4,igridn) + p_jet(1:ndim) / vol_nbor(j)
+                p_jet(1:ndim) = wfrac * fbk_mom_agn * jet_direction(1:ndim)
+                wfrac = abs(wfrac)
+
+                ! Energy of the jet gas; the kinetic energy lost when it mixes
+                ! with the gas of the sample point appears as thermal energy
+                de = 0.5d0 * wfrac * m_jet * ( sum(vp_old(1:ndim)**2) + v_jet**2 ) &
+                     & + dot_product(p_jet(1:ndim),vp_old(1:ndim))
+
+                m%unew(icelln,1,igridn)   = m%unew(icelln,1,igridn)   + wfrac * m_jet / vol_nbor(j)
+                m%unew(icelln,2:4,igridn) = m%unew(icelln,2:4,igridn) + ( wfrac * m_jet * vp_old(1:ndim) + p_jet(1:ndim) ) / vol_nbor(j)
                 m%unew(icelln,5,igridn)   = m%unew(icelln,5,igridn)   + de / vol_nbor(j)
+#if NVAR>5+NENER
+                do ivar = 6 + nener, nvar
+                   m%unew(icelln,ivar,igridn) = m%unew(icelln,ivar,igridn) + wfrac * q_jet(ivar) / vol_nbor(j)
+                end do
+#endif
              end do
           end if
 
