@@ -27,7 +27,7 @@ We describe the meaning and default values of the namelist variables in each of 
 
 [Cooling parameters](./cooling_params.md): Parameters controlling the cooling function used in the code.
 
-[Radiative transfer parameters](./rt_params.md): Parameters controlling the M1 radiation solver.
+[Radiative transfer parameters](./rt_params.md): Parameters controlling the M1 radiation solver and its coupling with the gas.
 
 [Radiation sources parameters](./rt_sources.md): Parameters controlling the sources of radiation for the M1 solver.
 
