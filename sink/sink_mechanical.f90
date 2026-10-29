@@ -111,18 +111,15 @@ contains
     ! Parameters
     ! Number of sample points (4x4x4 half cells minus the 8 corners)
     integer,parameter::nSKnei=56
-    ! Half opening angle of the radio mode jet in degrees
-    real(kind=8),parameter::agn_jet_half_angle=60
     ! Local variables
-    real(kind=8),dimension(1:3,1:nSKnei)::xSKnei,vSKnei
-    logical,dimension(1:nSKnei)::shell
+    real(kind=8),dimension(1:3,1:nSKnei)::xSKnei
     integer,dimension(1:nSKnei)::igrid_nbor,icell_nbor,level_nbor
     real(kind=8),dimension(1:nSKnei)::d_nbor,vol_nbor,w_nbor,mu_nbor
     real(kind=8),dimension(1:3,1:nSKnei)::v_nbor
     real(kind=8)::scale_nH,scale_T2,scale_l,scale_d,scale_t,scale_v,factG,unit_yr
     real(kind=8)::dx_loc,vol_loc,dx_cell,vol_cell,vol_pt,current_time
-    real(kind=8)::lambda_sonic,cos_jet,r_acc
-    real(kind=8)::x,y,z,rr
+    real(kind=8)::lambda_sonic,r_acc
+    real(kind=8)::x,y,z
     integer,dimension(1:ndim)::ckey,ckey_nbor
     integer(kind=8),dimension(0:ndim)::hash_cell,hash_nbor
     integer::i,j,k,ind,ipart,idim,ivar,istep,istep_old,igrid,icell,igridn,icelln,ilev_cell
@@ -166,14 +163,9 @@ contains
              x=(i-1)+0.5d0-2
              y=(j-1)+0.5d0-2
              z=(k-1)+0.5d0-2
-             rr=sqrt(x*x+y*y+z*z)
              xSKnei(1,ind)=x/2d0
              xSKnei(2,ind)=y/2d0
              xSKnei(3,ind)=z/2d0
-             vSKnei(1,ind)=x/rr
-             vSKnei(2,ind)=y/rr
-             vSKnei(3,ind)=z/rr
-             shell(ind)=.not.((i==2.or.i==3).and.(j==2.or.j==3).and.(k==2.or.k==3)) ! not centre
           end do
        end do
     end do
@@ -198,9 +190,6 @@ contains
     else
        lambda_sonic = 1.0d0
     end if
-
-    ! Cosine of the radio mode jet half opening angle
-    cos_jet=cos(pi/180d0*agn_jet_half_angle)
 
     ! Velocity of the mass-loaded radio mode jet in code units
     v_jet=r%agn_jet_vmax*1d5/scale_v
@@ -612,10 +601,10 @@ contains
           w_nbor=0d0; mu_nbor=0d0
           do j=1,nSKnei
              if(.not.quasar_mode)then
-                ! Radio mode: only shell points inside the bipolar cone
-                if(.not.shell(j))cycle
-                mu_nbor(j) = dot_product(vSKnei(1:ndim,j),jet_direction(1:ndim))
-                if(abs(mu_nbor(j))<cos_jet)cycle
+                ! Radio mode: all points, on either side of the jet equatorial
+                ! plane through the host cell centre (none in the plane)
+                mu_nbor(j) = dot_product(xSKnei(1:ndim,j),jet_direction(1:ndim))
+                if(mu_nbor(j)==0.0d0)cycle
              endif
              w_nbor(j) = 1d0
              if(r%agn_use_mass_weighting)w_nbor(j) = d_nbor(j)

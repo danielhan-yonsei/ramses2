@@ -47,7 +47,7 @@ The three namelist blocks `&SINK_PARAMS`, `&SINK_ACCRETION_PARAMS` and `&SINK_FE
 | `sink_fix_mass`         | `logical`    | `.false.`     | Freeze the sink mass (still remove accreted mass from the gas).                                                |
 | `static_sink`           | `logical`    | `.false.`     | Freeze the sink position (velocity and momentum are still updated).                                            |
 | `t_start_black_hole`    | `real`       | -1            | Delay time (code units, since sink birth) before accretion/feedback fully turn on. Ramp-up is exponential.     |
-| `sink_mechanical`       | `logical`    | `.false.`     | Use the 56-point multi-level stencil (as in mechanical SN feedback) for accretion, drag and AGN feedback, so `sink_refine` is not needed. Supports `accretion_type` 0, 1 or 3 only; ignores `sink_b_spline_order`, `agn_feedback_radius` and `agn_jet_opening_angle` (fixed 60° jet half-angle). |
+| `sink_mechanical`       | `logical`    | `.false.`     | Use the 56-point multi-level stencil (as in mechanical SN feedback) for accretion, drag and AGN feedback, so `sink_refine` is not needed. Supports `accretion_type` 0, 1 or 3 only; ignores `sink_b_spline_order`, `agn_feedback_radius` and `agn_jet_opening_angle` (cylindrical jet over the whole stencil). |
 
 ## `&SINK_FEEDBACK_PARAMS`: AGN feedback
 
@@ -66,6 +66,8 @@ The three namelist blocks `&SINK_PARAMS`, `&SINK_ACCRETION_PARAMS` and `&SINK_FE
 | `agn_jet_vmax`                  | `real`       | 1e4           | Jet velocity (km/s) of the mass-loaded radio mode (`sink_mechanical` only). A fraction eta/(1+eta) of the accreted mass, with eta = `2*epsilon_radio*epsilon_rad*(c/agn_jet_vmax)**2`, is put back into the jet, so that its kinetic energy is `epsilon_radio*L`, with L from the mass reaching the black hole. Must satisfy 0 < `agn_jet_vmax` <= c. |
 
 With `sink_mechanical=.true.`, feedback is spread over the 56-point stencil
-around the host cell, the radio-mode cone has a fixed 60° half-angle, and
+around the host cell. In radio mode all 56 points receive the jet, with the
+velocity along the spin axis, upward or downward depending on their side of the
+equatorial plane through the host cell centre (cylindrical jet, no opening angle), and
 `momentum_boost` is ignored: the radio-mode momentum is that of the jet mass
 moving at `agn_jet_vmax`, i.e. `(2*epsilon_radio*c/agn_jet_vmax)*L/c`.

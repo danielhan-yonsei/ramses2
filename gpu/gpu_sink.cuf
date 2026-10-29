@@ -760,8 +760,6 @@ contains
     real(kind=dp), parameter :: pi = 3.14159265358979_dp
     ! Number of sample points (4x4x4 half cells minus the 8 corners)
     integer, parameter :: nSKnei = 56
-    ! Half opening angle of the radio mode jet in degrees
-    real(kind=dp), parameter :: agn_jet_half_angle = 60.0_dp
     real(kind=dp), shared :: s_dMBH, s_rho_gas
     logical, shared :: s_do_agn, s_quasar
     real(kind=dp), shared :: s_jet(3), s_fbk_ener, s_fbk_mom, s_w_tot, s_w_plus, s_w_minus
@@ -774,7 +772,7 @@ contains
     integer :: irad
 #endif
     integer(kind=4) :: ckey(3), ckey_nbor(3)
-    logical :: found, shell
+    logical :: found
     real(kind=dp) :: xcen(3), xsink(3), xoff(3), xnei(3), x_rel(3), vv(3), v_rel(3), vp(3), p_jet(3)
     real(kind=dp) :: dx_cell, vol_cell, vol_pt, vol_nei, xnei_min, xnei_max
     real(kind=dp) :: d, e, ethermal, cs, mp, mtot, dm, dvol
@@ -784,7 +782,7 @@ contains
     real(kind=dp) :: rho_inf, dMBH, dMED
     real(kind=dp) :: m_acc, x_acc(3), p_acc(3), l_acc(3)
     real(kind=dp) :: mach, mach_c, fI, v_rel_mag, drag_accel, dv_drag
-    real(kind=dp) :: acc_ratio, jnorm, energy_agn, cos_jet, mu, w, w_tot, w_plus, w_minus, de
+    real(kind=dp) :: acc_ratio, jnorm, energy_agn, mu, w, w_tot, w_plus, w_minus, de
     real(kind=dp) :: eta, m_jet, m_bh, wfrac, q, jp_new(3)
 #ifdef MHD
     real(kind=dp) :: bx, by, bz
@@ -848,9 +846,8 @@ contains
     xoff(1) = 0.5_dp * real(mod(j, 4), kind=dp) - 0.75_dp
     xoff(2) = 0.5_dp * real(mod(j / 4, 4), kind=dp) - 0.75_dp
     xoff(3) = 0.5_dp * real(j / 16, kind=dp) - 0.75_dp
-    ! The 8 corners are not sample points, the 8 central points are not in the shell
+    ! The 8 corners are not sample points
     found = .not. (abs(xoff(1)) > 0.5_dp .and. abs(xoff(2)) > 0.5_dp .and. abs(xoff(3)) > 0.5_dp)
-    shell = (abs(xoff(1)) > 0.5_dp .or. abs(xoff(2)) > 0.5_dp .or. abs(xoff(3)) > 0.5_dp)
 
     !-------------------------------------------
     ! Gather: collect local gas information
@@ -1167,16 +1164,15 @@ contains
 
        if (s_do_agn) then
           ! Weight of this sample point
-          cos_jet = cos(pi / 180.0_dp * agn_jet_half_angle)
           w = 0.0_dp; mu = 0.0_dp
           if (found) then
              w = 1.0_dp
              if (agn_use_mass_weighting) w = d
              if (.not. s_quasar) then
-                ! Radio mode: only shell points inside the bipolar cone
-                mu = (xoff(1) * s_jet(1) + xoff(2) * s_jet(2) + xoff(3) * s_jet(3)) &
-                     & / sqrt(xoff(1)**2 + xoff(2)**2 + xoff(3)**2)
-                if (.not. shell .or. abs(mu) < cos_jet) w = 0.0_dp
+                ! Radio mode: all points, on either side of the jet equatorial
+                ! plane through the host cell centre (none in the plane)
+                mu = xoff(1) * s_jet(1) + xoff(2) * s_jet(2) + xoff(3) * s_jet(3)
+                if (mu == 0.0_dp) w = 0.0_dp
              endif
           endif
           w_tot = w
