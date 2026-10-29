@@ -388,8 +388,10 @@ contains
        if(r%core_momentum_conserving)then
           xacc(:,ipart)=xacc(:,ipart)+d_acc*core_acc_contrib(icontrib)%x_rel*vol_loc*dx_loc
           pacc(:,ipart)=pacc(:,ipart)+d_acc*core_acc_contrib(icontrib)%v_rel*vol_loc
+#if NDIM==3
           lacc(:,ipart)=lacc(:,ipart)+ &
                d_acc*cross(core_acc_contrib(icontrib)%x_rel,core_acc_contrib(icontrib)%v_rel)*vol_loc*dx_loc
+#endif
        endif
     enddo
     call close_cache(mdl)
