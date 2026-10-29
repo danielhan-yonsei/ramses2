@@ -45,6 +45,12 @@ subroutine m_read_rt_params(pst)
   !logical::rt_vsla=.false.            ! Are we using level variable light speed?        !
   integer::rt_nsubcycle=1              ! Maximum number of RT subcycles per hydro step   !
   logical::rt_otsa=.true.              ! Use on-the-spot approximation                   !
+  logical::rt_isIR=.false.             ! Use IR photon groups                            !
+  logical::is_kIR_T=.false.            ! Kappa IR depends on T_rad                       !
+  logical::rt_T_rad=.false.            ! Use radiation temperature for everything        !
+  logical::rt_isoPress=.false.         ! Use cE, not F, for rad. pressure                !
+  real(kind=8)::rt_pressBoost=1d0          ! Boost on RT pressure                            !
+  integer::iPEH_group=-1               ! Radiation group used for photo-electric heating !
   !logical::rt_isDiffuseUVsrc=.false.  ! UV emission from low-density cells              !
   !real(kind=8)::rt_UVsrc_nHmax=-1d0       ! Density threshold for UV emission               !
   !logical::upload_equilibrium_x=.true.! Enforce equilibrium xion when uploading         !
@@ -100,7 +106,8 @@ subroutine m_read_rt_params(pst)
   ! Namelist definitions
   !--------------------------------------------------
   namelist/rt_params/rt_advect, rt_otsa, rt_c_fraction, rt_nsubcycle     &
-       & ,rt_smooth
+       & ,rt_smooth, rt_isIR, is_kIR_T, rt_T_rad, rt_isoPress            &
+       & ,rt_pressBoost, iPEH_group
   namelist/rt_sources/rt_star, rt_sink, rt_esc_frac                      &
        & ,rt_emission_stats ,rt_nsource, rt_source_type                  &
        & ,rt_src_x_center, rt_src_y_center, rt_src_z_center              &
@@ -224,6 +231,18 @@ subroutine m_read_rt_params(pst)
   close(1)
 
   !--------------------------------------------------
+  ! Check the IR and photoelectric heating options
+  !--------------------------------------------------
+  if(iPEH_group>nrtgrp)then
+     write(*,*)'Error: iPEH_group must be at most nrtgrp, not ',iPEH_group
+     call mdl_abort(s%mdl)
+  endif
+  if(is_kIR_T.and.nrtgrp>1.and.kappaAbs(1)<=0d0)then
+     write(*,*)'Error: is_kIR_T=.true. with nrtgrp>1 needs kappaAbs(1)>0'
+     call mdl_abort(s%mdl)
+  endif
+
+  !--------------------------------------------------
   ! Reduced light speed. First check if only one light speed fraction set
   ! and if so, set that same light speed fraction at all levels. If more
   ! than one fraction is set, we are using a variable speed of light.
@@ -278,6 +297,12 @@ subroutine m_read_rt_params(pst)
   s%r%rt_c_fraction=rt_c_fraction
   s%r%rt_nsubcycle=rt_nsubcycle
   s%r%rt_courant_factor=rt_courant_factor
+  s%r%rt_isIR=rt_isIR
+  s%r%is_kIR_T=is_kIR_T
+  s%r%rt_T_rad=rt_T_rad
+  s%r%rt_isoPress=rt_isoPress
+  s%r%rt_pressBoost=rt_pressBoost
+  s%r%iPEH_group=iPEH_group
 
   s%r%rt_star=rt_star
   s%r%rt_sink=rt_sink
