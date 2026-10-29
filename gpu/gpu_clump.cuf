@@ -55,6 +55,7 @@ module clump_device
   real(kind=dp), device, allocatable, dimension(:)   :: max_dens_d
   real(kind=dp), device, allocatable, dimension(:)   :: saddle_dens_d
   integer, device, allocatable, dimension(:)         :: saddle_nbor_d
+  integer(kind=8), device, allocatable, dimension(:) :: saddle_edge_d
   integer, device, allocatable, dimension(:)         :: lev_peak_d
   integer, device, allocatable, dimension(:)         :: new_peak_d
   real(kind=dp), device, allocatable, dimension(:)   :: relevance_d
@@ -130,6 +131,7 @@ contains
     if (.not. allocated(max_dens_d))       allocate(max_dens_d(1:nclumpmax))
     if (.not. allocated(saddle_dens_d))    allocate(saddle_dens_d(1:nclumpmax))
     if (.not. allocated(saddle_nbor_d))    allocate(saddle_nbor_d(1:nclumpmax))
+    if (.not. allocated(saddle_edge_d))    allocate(saddle_edge_d(1:nclumpmax))
     if (.not. allocated(lev_peak_d))       allocate(lev_peak_d(1:nclumpmax))
     if (.not. allocated(new_peak_d))       allocate(new_peak_d(1:nclumpmax))
     if (.not. allocated(relevance_d))      allocate(relevance_d(1:nclumpmax))
@@ -184,6 +186,7 @@ contains
     if (allocated(max_dens_d))       deallocate(max_dens_d)
     if (allocated(saddle_dens_d))    deallocate(saddle_dens_d)
     if (allocated(saddle_nbor_d))    deallocate(saddle_nbor_d)
+    if (allocated(saddle_edge_d))    deallocate(saddle_edge_d)
     if (allocated(lev_peak_d))       deallocate(lev_peak_d)
     if (allocated(new_peak_d))       deallocate(new_peak_d)
     if (allocated(relevance_d))      deallocate(relevance_d)
@@ -973,11 +976,12 @@ contains
   end subroutine gpu_collect_patch
 
   ! =========================================================================
-  ! CUDA Kernel: Initialize saddle density and neighbor id
+  ! CUDA Kernel: Initialize saddle density, neighbor id and edge key
   ! =========================================================================
-  attributes(global) subroutine init_saddle_arrays_kernel(saddle_dens_d, saddle_nbor_d, density_threshold, npeak)
+  attributes(global) subroutine init_saddle_arrays_kernel(saddle_dens_d, saddle_nbor_d, saddle_edge_d, density_threshold, npeak)
     real(kind=dp), device :: saddle_dens_d(*)
     integer, device :: saddle_nbor_d(*)
+    integer(kind=8), device :: saddle_edge_d(*)
     real(kind=dp), value :: density_threshold
     integer, value :: npeak
 
@@ -988,19 +992,21 @@ contains
     ipeak = gid
     saddle_dens_d(ipeak) = density_threshold
     saddle_nbor_d(ipeak) = 0
+    saddle_edge_d(ipeak) = huge(0_8)
   end subroutine init_saddle_arrays_kernel
 
   ! =========================================================================
   ! CUDA Kernel: Scan neighbors and identify saddle points
   ! =========================================================================
   attributes(global) subroutine collect_saddle_kernel( &
-       & flag1, grid_d, cell_d, level_d, saddle_dens_d, saddle_nbor_d, &
+       & flag1, grid_d, cell_d, level_d, saddle_dens_d, saddle_nbor_d, saddle_edge_d, &
        & rho, grid, periodic, box_ckey_min, box_ckey_max, threshold, &
        & hash_key, hash_val, hash_size, ntest, ngridmax, npass)
     integer, device :: flag1(1:twotondim, *)
     integer, device :: grid_d(*), cell_d(*), level_d(*)
     real(kind=dp), device :: saddle_dens_d(*)
     integer, device :: saddle_nbor_d(*)
+    integer(kind=8), device :: saddle_edge_d(*)
     real(kind=dp), device :: rho(1:twotondim, *)
     type(oct), device :: grid(*)
     logical, device :: periodic(3)
@@ -1018,6 +1024,7 @@ contains
     integer(kind=8) :: hash_nbor(0:3)
     integer :: peak_cen, peak_nbor
     real(kind=dp) :: dens_cen, dens_ave, dens_cand, dens_old
+    integer(kind=8) :: edge, edge_old
     logical :: ok
 
     ! Per-cell max reduction: 56 lanes padded to 64 slots, 4 cells per block
@@ -1094,9 +1101,13 @@ contains
                 if (npass == 1) then
                    ! Pass 1: contribute to the per-cell saddle density maximum
                    dens_cand = dens_ave
-                else
-                   ! Pass 2: the winning density claims the neighbor (ties arbitrary)
-                   if (dens_ave > threshold .and. dens_ave == saddle_dens_d(peak_cen)) then
+                else if (dens_ave > threshold .and. dens_ave == saddle_dens_d(peak_cen)) then
+                   edge = int(itest-1, kind=8)*56_8 + int(lane, kind=8)
+                   if (npass == 2) then
+                      ! Pass 2: keep the smallest edge key among the pairs at the maximum
+                      edge_old = atomicmin(saddle_edge_d(peak_cen), edge)
+                   else if (edge == saddle_edge_d(peak_cen)) then
+                      ! Pass 3: that edge claims the neighbor
                       saddle_nbor_d(peak_cen) = peak_nbor
                    endif
                 endif
@@ -1148,17 +1159,18 @@ contains
     block_size = 256
     grid_size_peaks = (npeak + block_size - 1) / block_size
 
-    ! Initialize saddle density to threshold and saddle neighbor to 0
+    ! Initialize saddle density to threshold, saddle neighbor to 0 and edge key to huge
     call init_saddle_arrays_kernel<<<grid_size_peaks, block_size>>>( &
-         & saddle_dens_d, saddle_nbor_d, real(sim%c%density_threshold, kind=dp), npeak)
+         & saddle_dens_d, saddle_nbor_d, saddle_edge_d, real(sim%c%density_threshold, kind=dp), npeak)
 
     ! 56 threads per test cell, so block size 224 (4 cells per block)
     grid_size = (ntest + 3) / 4
 
-    ! Two passes: max-reduce saddle density, then match it to store the neighbor id
-    do ipass = 1, 2
+    ! Three passes: max-reduce saddle density, keep the smallest edge key at that
+    ! density, then let that edge store the neighbor id
+    do ipass = 1, 3
        call collect_saddle_kernel<<<grid_size, 224>>>( &
-            & flag1, grid_d, cell_d, level_d, saddle_dens_d, saddle_nbor_d, &
+            & flag1, grid_d, cell_d, level_d, saddle_dens_d, saddle_nbor_d, saddle_edge_d, &
             & rho, grid, periodic, box_ckey_min, box_ckey_max, real(sim%c%density_threshold, kind=dp), &
             & hash_key, hash_val, sim%m%hash_size, ntest, sim%m%ngridmax, ipass)
     end do
