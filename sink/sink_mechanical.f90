@@ -133,8 +133,8 @@ contains
     real(kind=8),dimension(1:3)::x_acc,p_acc,l_acc
     real(kind=8)::acc_ratio,energy_agn,fbk_ener_agn,fbk_mom_agn
     real(kind=8)::w_tot,w_plus,w_minus,de
-    real(kind=8)::v_jet,eta,m_jet,m_bh,wfrac
-    real(kind=8),dimension(1:3)::vp_old,jp_new
+    real(kind=8)::v_jet,eta,m_jet,m_bh,wfrac,m_pt
+    real(kind=8),dimension(1:3)::vp_old,jp_new,v_new
     real(kind=8),dimension(1:nvar)::q_acc,q_jet
     logical::quasar_mode,ok_level,ok_leaf,ok_face,output_file
     type(msg_large_realdp)::dummy_large_realdp
@@ -635,10 +635,12 @@ contains
                 p_jet(1:ndim) = wfrac * fbk_mom_agn * jet_direction(1:ndim)
                 wfrac = abs(wfrac)
 
-                ! Energy of the jet gas; the kinetic energy lost when it mixes
-                ! with the gas of the sample point appears as thermal energy
-                de = 0.5d0 * wfrac * m_jet * ( sum(vp_old(1:ndim)**2) + v_jet**2 ) &
-                     & + dot_product(p_jet(1:ndim),vp_old(1:ndim))
+                ! Inelastic jet: kinetic energy gain of the merger of the jet mass
+                ! with the gas of the sample point, the mixing loss is radiated
+                m_pt = d_nbor(j) * vol_pt
+                v_new(1:ndim) = ( m_pt * v_nbor(1:ndim,j) + wfrac * m_jet * vp_old(1:ndim) + p_jet(1:ndim) ) &
+                     &        / ( m_pt + wfrac * m_jet )
+                de = 0.5d0 * ( m_pt + wfrac * m_jet ) * sum(v_new(1:ndim)**2) - 0.5d0 * m_pt * sum(v_nbor(1:ndim,j)**2)
 
                 m%unew(icelln,1,igridn)   = m%unew(icelln,1,igridn)   + wfrac * m_jet / vol_nbor(j)
                 m%unew(icelln,2:4,igridn) = m%unew(icelln,2:4,igridn) + ( wfrac * m_jet * vp_old(1:ndim) + p_jet(1:ndim) ) / vol_nbor(j)

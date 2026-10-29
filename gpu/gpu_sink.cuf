@@ -783,7 +783,7 @@ contains
     real(kind=dp) :: m_acc, x_acc(3), p_acc(3), l_acc(3)
     real(kind=dp) :: mach, mach_c, fI, v_rel_mag, drag_accel, dv_drag
     real(kind=dp) :: acc_ratio, jnorm, energy_agn, mu, w, w_tot, w_plus, w_minus, de
-    real(kind=dp) :: eta, m_jet, m_bh, wfrac, q, jp_new(3)
+    real(kind=dp) :: eta, m_jet, m_bh, wfrac, q, jp_new(3), m_pt, v_new(3)
 #ifdef MHD
     real(kind=dp) :: bx, by, bz
 #endif
@@ -1203,10 +1203,13 @@ contains
                 endif
                 p_jet(1:3) = wfrac * s_fbk_mom * s_jet(1:3)
                 wfrac = abs(wfrac)
-                ! Energy of the jet gas; the kinetic energy lost when it mixes
-                ! with the gas of the sample point appears as thermal energy
-                de = 0.5_dp * wfrac * s_m_jet * (s_vs(1)**2 + s_vs(2)**2 + s_vs(3)**2 + v_jet**2) &
-                     & + p_jet(1) * s_vs(1) + p_jet(2) * s_vs(2) + p_jet(3) * s_vs(3)
+                ! Inelastic jet: kinetic energy gain of the merger of the jet mass
+                ! with the gas of the sample point, the mixing loss is radiated
+                m_pt = d * vol_pt
+                v_new(1:3) = (m_pt * vv(1:3) + wfrac * s_m_jet * s_vs(1:3) + p_jet(1:3)) &
+                     & / (m_pt + wfrac * s_m_jet)
+                de = 0.5_dp * (m_pt + wfrac * s_m_jet) * (v_new(1)**2 + v_new(2)**2 + v_new(3)**2) &
+                     & - 0.5_dp * m_pt * (vv(1)**2 + vv(2)**2 + vv(3)**2)
                 info = atomicadd(unew(icelln, 1, igridn), wfrac * s_m_jet / vol_nei)
                 info = atomicadd(unew(icelln, 2, igridn), (wfrac * s_m_jet * s_vs(1) + p_jet(1)) / vol_nei)
                 info = atomicadd(unew(icelln, 3, igridn), (wfrac * s_m_jet * s_vs(2) + p_jet(2)) / vol_nei)

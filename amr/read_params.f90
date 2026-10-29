@@ -555,7 +555,7 @@ subroutine m_read_params(pst)
   integer::agn_feedback_radius = 4 ! Radius (in dx_min) of feedback region (should be geq sink_b_spline_order/2)
   integer::agn_weighting_scheme = 1 ! Which AGN weighting scheme (psy_function) to use
   real(kind=8)::epsilon_rad = 0.1d0 ! Radiative efficiency
-  real(kind=8)::epsilon_radio = 0.1d0 ! Efficiency of momentum feedback for jet
+  real(kind=8)::epsilon_radio = 1.0d0 ! Efficiency of momentum feedback for jet
   real(kind=8)::epsilon_quasar = 0.15d0 ! Efficiency of thermal feedback for quasar
   real(kind=8)::momentum_boost = 10.0d0 ! Momentum boost in units of L/c for the jet
   real(kind=8)::agn_fbk_mode_switch_threshold = 0.01d0 ! Threshold accretion rate to switch from jet to quasar mode

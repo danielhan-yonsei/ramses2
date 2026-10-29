@@ -59,7 +59,7 @@ The three namelist blocks `&SINK_PARAMS`, `&SINK_ACCRETION_PARAMS` and `&SINK_FE
 | `agn_fbk_mode_switch_threshold` | `real`       | 0.01          | Eddington ratio below which the code switches from quasar (thermal) to radio (kinetic) mode.       |
 | `epsilon_rad`                   | `real`       | 0.1           | Radiative efficiency `L = epsilon_rad * dM/dt * c^2`.                                              |
 | `epsilon_quasar`                | `real`       | 0.15          | Coupling efficiency of the quasar-mode thermal energy injection.                                   |
-| `epsilon_radio`                 | `real`       | 0.1           | Coupling efficiency of the radio-mode momentum injection. With `sink_mechanical=.true.`, fraction of the luminosity going into the jet kinetic energy. |
+| `epsilon_radio`                 | `real`       | 1             | Coupling efficiency of the radio-mode momentum injection. With `sink_mechanical=.true.`, fraction of the luminosity going into the jet kinetic energy. |
 | `momentum_boost`                | `real`       | 10            | Momentum boost of the radio-mode jet in units of `L/c`.                                            |
 | `agn_jet_opening_angle`         | `real`       | 60            | Full opening angle (degrees) of the radio-mode bipolar outflow cone.                               |
 | `agn_use_mass_weighting`        | `logical`    | `.false.`     | Weight the feedback injection by the local gas density.                                            |
@@ -71,3 +71,5 @@ velocity along the spin axis, upward or downward depending on their side of the
 equatorial plane through the host cell centre (cylindrical jet, no opening angle), and
 `momentum_boost` is ignored: the radio-mode momentum is that of the jet mass
 moving at `agn_jet_vmax`, i.e. `(2*epsilon_radio*c/agn_jet_vmax)*L/c`.
+The jet mass merges inelastically with the gas of each sample point: only the
+resulting kinetic energy gain is added, and the energy lost in the mixing is radiated.
