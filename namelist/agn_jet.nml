@@ -73,7 +73,7 @@ riemann='hllc'
 
 &SINK_PARAMS
 sink=.true.
-nsinkmax = 10
+nsinkmax=10
 sink_form=.false.
 /
 
@@ -91,7 +91,7 @@ agn_feedback_radius=6
 agn_fbk_mode_switch_threshold=100
 agn_jet_opening_angle=30
 agn_use_mass_weighting=.true.
-epsilon_radio=10
+epsilon_radio=1
 /
 
 &REFINE_PARAMS

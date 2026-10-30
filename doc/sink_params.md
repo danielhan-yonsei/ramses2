@@ -77,10 +77,12 @@ ambient mass seen by the feedback (minimum over the sample points of the gas mas
 divided by the fraction of the feedback it receives), and
 lambda = `epsilon_radio*epsilon_rad*c/agn_jet_vmax` (radio) or
 lambda = `gamma*(gamma-1)*epsilon_quasar*epsilon_rad*(c/agn_jet_vmax)**2` (quasar).
-In quasar mode the cap is on the sound speed after heating: the ambient mass of each
-sample point is reduced by the factor (1 - e/e_max), with e its specific thermal energy
-and e_max = agn_jet_vmax**2/(gamma*(gamma-1)), and M_a is floored at 0, so that gas
-already hotter than the cap does not get hotter.
+The caps apply to the state of the gas after the deposit, not to the increment of one
+step: the ambient mass of each sample point is reduced by the factor (1 - e/e_max) in
+quasar mode, with e its specific thermal energy and e_max = agn_jet_vmax**2/(gamma*(gamma-1)),
+and by the factor (1 - u/agn_jet_vmax) in radio mode, with u its velocity relative to the
+sink along the jet, on its side of the equatorial plane. M_a is floored at 0, so that gas
+already hotter or faster than the cap does not get hotter or faster.
 There is no loading in dense gas. The energy added to each sample point is the change of
 kinetic energy of its gas, plus the quasar-mode heating, so that its thermal energy
 stays positive.

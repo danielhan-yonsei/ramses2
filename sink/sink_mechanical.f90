@@ -133,7 +133,7 @@ contains
     real(kind=8),dimension(1:3)::x_acc,p_acc,l_acc
     real(kind=8)::acc_ratio,fbk_ener_agn,fbk_mom_agn
     real(kind=8)::w_plus,w_minus,de
-    real(kind=8)::v_max,e_max,lambda_load,eta,m_amb,m_wind,m_bh,m_pt
+    real(kind=8)::v_max,e_max,u_rel,lambda_load,eta,m_amb,m_wind,m_bh,m_pt
     real(kind=8),dimension(1:3)::vp_old,jp_new,v_new
     real(kind=8),dimension(1:nvar)::q_acc,q_wind
     logical::quasar_mode,ok_level,ok_leaf,ok_face,output_file
@@ -570,9 +570,11 @@ contains
              where(mu_nbor<0d0)w_nbor = 0.5d0 * w_nbor / w_minus
           endif
 
-          ! Ambient mass seen by the feedback. In quasar mode, it is reduced by the
-          ! thermal energy already in the gas, so that the sound speed after heating
-          ! does not exceed agn_jet_vmax (gas already hotter does not get hotter)
+          ! Ambient mass seen by the feedback. It is reduced by the thermal energy
+          ! (quasar mode) or the velocity along the jet relative to the sink (radio
+          ! mode) already in the gas, so that the sound speed after heating or the
+          ! velocity after the kick does not exceed agn_jet_vmax (gas already
+          ! hotter or faster does not get hotter or faster)
           e_max = v_max**2 / ( dble(r%gamma) * (dble(r%gamma) - 1.0d0) )
           m_amb = huge(1.0d0)
           do j=1,nSKnei
@@ -580,7 +582,8 @@ contains
              if(quasar_mode)then
                 m_amb = min(m_amb, d_nbor(j) * vol_pt / w_nbor(j) * ( 1.0d0 - e_nbor(j) / e_max ))
              else
-                m_amb = min(m_amb, d_nbor(j) * vol_pt / w_nbor(j))
+                u_rel = sign(1.0d0,mu_nbor(j)) * dot_product(v_nbor(1:ndim,j) - p%vp(ipart,1:ndim), jet_direction(1:ndim))
+                m_amb = min(m_amb, d_nbor(j) * vol_pt / w_nbor(j) * ( 1.0d0 - u_rel / v_max ))
              endif
           end do
           m_amb = max(m_amb, 0.0d0)

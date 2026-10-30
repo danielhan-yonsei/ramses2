@@ -783,7 +783,7 @@ contains
     real(kind=dp) :: m_acc, x_acc(3), p_acc(3), l_acc(3)
     real(kind=dp) :: mach, mach_c, fI, v_rel_mag, drag_accel, dv_drag
     real(kind=dp) :: acc_ratio, jnorm, mu, w, w_tot, w_plus, w_minus, de
-    real(kind=dp) :: lambda_load, eta, e_max, m_amb, m_wind, m_bh, q, jp_new(3), m_pt, v_new(3)
+    real(kind=dp) :: lambda_load, eta, e_max, u_rel, m_amb, m_wind, m_bh, q, jp_new(3), m_pt, v_new(3)
 #ifdef MHD
     real(kind=dp) :: bx, by, bz
 #endif
@@ -1111,15 +1111,19 @@ contains
        else if (mu < 0.0_dp) then
           w = 0.5_dp * w / s_w_minus
        endif
-       ! Ambient mass seen by the feedback. In quasar mode, it is reduced by the
-       ! thermal energy already in the gas, so that the sound speed after heating
-       ! does not exceed agn_jet_vmax (gas already hotter does not get hotter)
+       ! Ambient mass seen by the feedback. It is reduced by the thermal energy
+       ! (quasar mode) or the velocity along the jet relative to the sink (radio
+       ! mode) already in the gas, so that the sound speed after heating or the
+       ! velocity after the kick does not exceed agn_jet_vmax (gas already
+       ! hotter or faster does not get hotter or faster)
        if (w > 0.0_dp) then
           if (s_quasar) then
              e_max = v_max**2 / (gamma * (gamma - 1.0_dp))
              m_amb = d * vol_pt / w * (1.0_dp - ethermal / e_max)
           else
-             m_amb = d * vol_pt / w
+             u_rel = sign(1.0_dp, mu) * ((vv(1) - vp(1)) * s_jet(1) + (vv(2) - vp(2)) * s_jet(2) &
+                  &                    + (vv(3) - vp(3)) * s_jet(3))
+             m_amb = d * vol_pt / w * (1.0_dp - u_rel / v_max)
           endif
        endif
        m_amb = block_reduce_dp_min(m_amb)
