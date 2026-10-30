@@ -59,17 +59,28 @@ The three namelist blocks `&SINK_PARAMS`, `&SINK_ACCRETION_PARAMS` and `&SINK_FE
 | `agn_fbk_mode_switch_threshold` | `real`       | 0.01          | Eddington ratio below which the code switches from quasar (thermal) to radio (kinetic) mode.       |
 | `epsilon_rad`                   | `real`       | 0.1           | Radiative efficiency `L = epsilon_rad * dM/dt * c^2`.                                              |
 | `epsilon_quasar`                | `real`       | 0.15          | Coupling efficiency of the quasar-mode thermal energy injection.                                   |
-| `epsilon_radio`                 | `real`       | 1             | Coupling efficiency of the radio-mode momentum injection. With `sink_mechanical=.true.`, fraction of the luminosity going into the jet kinetic energy. |
-| `momentum_boost`                | `real`       | 10            | Momentum boost of the radio-mode jet in units of `L/c`.                                            |
+| `epsilon_radio`                 | `real`       | 1             | Momentum of the radio-mode jet in units of `L/c`.                                                  |
 | `agn_jet_opening_angle`         | `real`       | 60            | Full opening angle (degrees) of the radio-mode bipolar outflow cone.                               |
 | `agn_use_mass_weighting`        | `logical`    | `.false.`     | Weight the feedback injection by the local gas density.                                            |
-| `agn_jet_vmax`                  | `real`       | 1e4           | Jet velocity (km/s) of the mass-loaded radio mode (`sink_mechanical` only). A fraction eta/(1+eta) of the accreted mass, with eta = `2*epsilon_radio*epsilon_rad*(c/agn_jet_vmax)**2`, is put back into the jet, so that its kinetic energy is `epsilon_radio*L`, with L from the mass reaching the black hole. Must satisfy 0 < `agn_jet_vmax` <= c. |
+| `agn_jet_vmax`                  | `real`       | 1e4           | Maximum velocity kick (radio mode) and sound speed (quasar mode), in km/s, of the mass-loaded AGN feedback (`sink_mechanical` only). Must satisfy 0 < `agn_jet_vmax` <= c. |
 
 With `sink_mechanical=.true.`, feedback is spread over the 56-point stencil
 around the host cell. In radio mode all 56 points receive the jet, with the
 velocity along the spin axis, upward or downward depending on their side of the
-equatorial plane through the host cell centre (cylindrical jet, no opening angle), and
-`momentum_boost` is ignored: the radio-mode momentum is that of the jet mass
-moving at `agn_jet_vmax`, i.e. `(2*epsilon_radio*c/agn_jet_vmax)*L/c`.
-The jet mass merges inelastically with the gas of each sample point: only the
-resulting kinetic energy gain is added, and the energy lost in the mixing is radiated.
+equatorial plane through the host cell centre (cylindrical jet, no opening angle).
+In both modes, a fraction eta/(1+eta) of the accreted mass is not accreted but put
+back into the gas with the feedback, and the luminosity L comes from the mass reaching
+the black hole. The loading is the smallest one that keeps the radio-mode velocity kick
+or the quasar-mode sound speed below `agn_jet_vmax`:
+eta = max(0, (lambda*M_in - M_a)/(M_a + M_in)), with M_in the accreted mass, M_a the
+ambient mass seen by the feedback (minimum over the sample points of the gas mass
+divided by the fraction of the feedback it receives), and
+lambda = `epsilon_radio*epsilon_rad*c/agn_jet_vmax` (radio) or
+lambda = `gamma*(gamma-1)*epsilon_quasar*epsilon_rad*(c/agn_jet_vmax)**2` (quasar).
+In quasar mode the cap is on the sound speed after heating: the ambient mass of each
+sample point is reduced by the factor (1 - e/e_max), with e its specific thermal energy
+and e_max = agn_jet_vmax**2/(gamma*(gamma-1)), and M_a is floored at 0, so that gas
+already hotter than the cap does not get hotter.
+There is no loading in dense gas. The energy added to each sample point is the change of
+kinetic energy of its gas, plus the quasar-mode heating, so that its thermal energy
+stays positive.

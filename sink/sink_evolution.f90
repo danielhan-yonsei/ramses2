@@ -889,7 +889,7 @@ contains
        fbk_ener_agn = r%epsilon_quasar * energy_agn
 
        ! Radio mode momentum
-       fbk_mom_agn  = r%epsilon_radio * r%momentum_boost * energy_agn / (c_cgs/scale_v)
+       fbk_mom_agn  = r%epsilon_radio * energy_agn / (c_cgs/scale_v)
 
        ! Loop over the affected cells
        do iBHnei=1,nBH_fb_nei

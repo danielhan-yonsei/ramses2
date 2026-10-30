@@ -82,7 +82,7 @@ sink_b_spline_order=4
 accretion_type=1
 bondi_use_vrel=.false.
 static_sink=.true.
-manual_accretion_rate=0.1 ! Enforces a constant accretion rate
+manual_accretion_rate=0.01 ! Enforces a constant accretion rate
 /
 
 &SINK_FEEDBACK_PARAMS
@@ -91,7 +91,7 @@ agn_feedback_radius=6
 agn_fbk_mode_switch_threshold=100
 agn_jet_opening_angle=30
 agn_use_mass_weighting=.true.
-momentum_boost=1
+epsilon_radio=10
 /
 
 &REFINE_PARAMS

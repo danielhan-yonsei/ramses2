@@ -555,13 +555,12 @@ subroutine m_read_params(pst)
   integer::agn_feedback_radius = 4 ! Radius (in dx_min) of feedback region (should be geq sink_b_spline_order/2)
   integer::agn_weighting_scheme = 1 ! Which AGN weighting scheme (psy_function) to use
   real(kind=8)::epsilon_rad = 0.1d0 ! Radiative efficiency
-  real(kind=8)::epsilon_radio = 1.0d0 ! Efficiency of momentum feedback for jet
+  real(kind=8)::epsilon_radio = 1.0d0 ! Momentum of the jet in units of L/c
   real(kind=8)::epsilon_quasar = 0.15d0 ! Efficiency of thermal feedback for quasar
-  real(kind=8)::momentum_boost = 10.0d0 ! Momentum boost in units of L/c for the jet
   real(kind=8)::agn_fbk_mode_switch_threshold = 0.01d0 ! Threshold accretion rate to switch from jet to quasar mode
   real(kind=8)::agn_jet_opening_angle = 60.0d0 !  Outflow cone opening angle; in deg
   logical::agn_use_mass_weighting = .false. ! Whether to use a mass-weighted feedback scheme
-  real(kind=8)::agn_jet_vmax = 1.0d4 ! Jet velocity in km/s of the mass-loaded radio mode (sink_mechanical only)
+  real(kind=8)::agn_jet_vmax = 1.0d4 ! Maximum velocity kick and sound speed in km/s of the mass-loaded AGN feedback (sink_mechanical only)
 
   ! Gadget initial conditions parameters
   character(len=flen)::ic_file, ic_format
@@ -742,7 +741,7 @@ subroutine m_read_params(pst)
        & ,manual_accretion_rate,sink_mechanical
   ! AGN Feedback parameters
   namelist/sink_feedback_params/agn,agn_feedback_radius,agn_weighting_scheme,epsilon_rad &
-       & ,epsilon_radio,epsilon_quasar,momentum_boost,agn_fbk_mode_switch_threshold &
+       & ,epsilon_radio,epsilon_quasar,agn_fbk_mode_switch_threshold &
        & ,agn_jet_opening_angle,agn_use_mass_weighting,agn_jet_vmax
   ! Supernovae feedback parameters
   namelist/feedback_params/M_SNII,E_SNII,t_SNII,eta_SNII,yield_SNII,thermal_feedback,mechanical_feedback
@@ -1372,7 +1371,7 @@ subroutine m_read_params(pst)
         write(*,*)'Error: sink_mechanical=.true. does not support use_local_bondi_rate=.true.'
         nml_ok=.false.
      endif
-     ! The jet velocity of the mass-loaded radio mode is at most the speed of light
+     ! The maximum velocity kick and sound speed of the AGN feedback are at most the speed of light
      if(agn.and.(agn_jet_vmax<=0.or.agn_jet_vmax*1d5>c_cgs))then
         write(*,*)'Error: sink_mechanical=.true. needs 0 < agn_jet_vmax <= c (in km/s)'
         write(*,*)'Currently agn_jet_vmax=',agn_jet_vmax
@@ -2005,7 +2004,6 @@ subroutine m_read_params(pst)
   s%r%epsilon_rad = epsilon_rad
   s%r%epsilon_radio = epsilon_radio
   s%r%epsilon_quasar = epsilon_quasar
-  s%r%momentum_boost = momentum_boost
   s%r%agn_fbk_mode_switch_threshold = agn_fbk_mode_switch_threshold
   s%r%agn_jet_opening_angle = agn_jet_opening_angle
   s%r%agn_use_mass_weighting = agn_use_mass_weighting
