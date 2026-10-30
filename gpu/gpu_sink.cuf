@@ -686,8 +686,10 @@ contains
                       info = atomicadd(unew(icelln, 2, igridn), fbk_mom_loc * cone_dist * s_jet(1))
                       info = atomicadd(unew(icelln, 3, igridn), fbk_mom_loc * cone_dist * s_jet(2))
                       info = atomicadd(unew(icelln, 4, igridn), fbk_mom_loc * cone_dist * s_jet(3))
+                      ! Work done: kinetic energy change of the cell, so that its thermal energy is unchanged
                       info = atomicadd(unew(icelln, 5, igridn), fbk_mom_loc * cone_dist &
-                           & * (s_jet(1) * vv(1) + s_jet(2) * vv(2) + s_jet(3) * vv(3)))
+                           & * (s_jet(1) * vv(1) + s_jet(2) * vv(2) + s_jet(3) * vv(3)) &
+                           & + 0.5_dp * (fbk_mom_loc * cone_dist)**2 / d)
                    endif
                 end do
              end do

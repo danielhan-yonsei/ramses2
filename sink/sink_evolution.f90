@@ -935,12 +935,12 @@ contains
                 ! Get the local feedback quantities (accounting for weightings)
                 fbk_mom_agn_loc  = fbk_mom_agn  * weight / vol_loc
 
-                ! Now we inject the actual feedback (note, all energy is due to work done)
-                m%unew(icelln,2:4,igridn) = m%unew(icelln,2:4,igridn) &
-                     & + fbk_mom_agn_loc*dot_product(jet_direction(:),x_rel(:))*jet_direction(1:ndim)/(r_rel+tiny(0.0d0))
+                ! Now we inject the actual feedback (note, all energy is due to work done,
+                ! i.e. the kinetic energy change of the cell, so that its thermal energy is unchanged)
+                fbk_mom_agn_loc = fbk_mom_agn_loc*dot_product(jet_direction(:),x_rel(:))/(r_rel+tiny(0.0d0))
+                m%unew(icelln,2:4,igridn) = m%unew(icelln,2:4,igridn) + fbk_mom_agn_loc*jet_direction(1:ndim)
                 m%unew(icelln,5,igridn)   = m%unew(icelln,5,igridn)   &
-                     & + fbk_mom_agn_loc*dot_product(jet_direction(:),x_rel(:)/(r_rel+tiny(0.0d0)))* &
-                     & dot_product(jet_direction(1:ndim), vv(1:ndim))
+                     & + fbk_mom_agn_loc*dot_product(jet_direction(1:ndim), vv(1:ndim)) + 0.5d0*fbk_mom_agn_loc**2/d
 
              end if
 
